@@ -12,12 +12,16 @@ app.use(cors());
 app.use(express.json());
 
 let browser;
-let page; 
 
+// Inicializa el navegador con bypass de SSL para el BCV
 async function initBrowser() {
+    if (browser) {
+        try { await browser.close(); } catch (e) {}
+    }
+    console.log("⏳ Inicializando Puppeteer...");
     browser = await puppeteer.launch({ 
         headless: true, 
-        ignoreHTTPSErrors: true, // EVITA BLOQUEOS POR CERTIFICADO SSL DEL BCV
+        ignoreHTTPSErrors: true, // CLAVE PARA EL BCV
         args: [
             '--no-sandbox', 
             '--disable-setuid-sandbox',
@@ -25,25 +29,28 @@ async function initBrowser() {
             '--disable-gpu',           
             '--no-zygote',
             '--single-process',
-            '--ignore-certificate-errors', // OBLIGATORIO PARA CUMPIR CON EL BCV
-            '--ignore-certificate-errors-spki-list'
+            '--ignore-certificate-errors' // CLAVE PARA EL BCV
         ]
     }); 
-    page = await browser.newPage();
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-    
-    console.log("⏳ Abriendo Binance para inicializar motores...");
-    await page.goto('https://p2p.binance.com/es-LA', { waitUntil: 'domcontentloaded', timeout: 60000 });
-    await new Promise(resolve => setTimeout(resolve, 5000));
-    
-    console.log("✅ Navegador listo. Esperando a la App...");
+    console.log("✅ Puppeteer listo.");
+}
+
+// Función vital en Railway para revivir el navegador si se duerme
+async function ensureBrowser() {
+    if (!browser || !browser.isConnected()) {
+        console.log("⚠️ Navegador desconectado. Reiniciando...");
+        await initBrowser();
+    }
 }
 
 // Endpoint 1: Estadísticas (Binance P2P)
 app.get('/api/merchant/:userNo', async (req, res) => {
+    await ensureBrowser();
     const userNo = req.params.userNo;
-    console.log(`\n📥 [APP] Pidiendo estadísticas para: ${userNo}`);
+    console.log(`\n📥 Pidiendo estadísticas para: ${userNo}`);
+    let page;
     try {
+        page = await browser.newPage();
         const data = await page.evaluate(async (uid) => {
             const response = await fetch(`https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/user/profile-and-ads-list?userNo=${uid}`, {
                 method: 'GET',
@@ -51,23 +58,25 @@ app.get('/api/merchant/:userNo', async (req, res) => {
             });
             return response.json();
         }, userNo);
-        console.log(`🟢 [APP] Estadísticas enviadas.`);
+        await page.close();
         res.json(data);
     } catch (error) {
-        console.log(`❌ Error al extraer estadísticas:`, error);
+        if (page && !page.isClosed()) await page.close();
+        console.log(`❌ Error:`, error.message);
         res.status(500).json({ error: "Error interno" });
     }
 });
 
 // Endpoint 2: Comentarios (Binance P2P)
 app.post('/api/comments', async (req, res) => {
+    await ensureBrowser();
     const { userNo, page = 1 } = req.body;
-    console.log(`📥 [APP] Pidiendo comentarios para: ${userNo} | Pág: ${page}`);
+    console.log(`📥 Pidiendo comentarios para: ${userNo} | Pág: ${page}`);
     
     let tempPage;
     try {
         tempPage = await browser.newPage();
-        await tempPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+        await tempPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
         await tempPage.goto(`https://p2p.binance.com/es-LA/advertiserDetail?advertiserNo=${userNo}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
         
         const reviewsData = await tempPage.evaluate(async (uid, pageNum) => {
@@ -113,27 +122,27 @@ app.post('/api/comments', async (req, res) => {
         if (posList.length > 0) combinedReviews = combinedReviews.concat(procesarComentarios(posList, "POSITIVE"));
         if (negList.length > 0) combinedReviews = combinedReviews.concat(procesarComentarios(negList, "NEGATIVE"));
         
-        console.log(`🟢 [APP] Pág ${page} enviada.`);
         res.json({ code: "000000", data: { data: combinedReviews, totalPositivos: totalPos, totalNegativos: totalNeg } });
-
     } catch (error) {
         if (tempPage && !tempPage.isClosed()) await tempPage.close();
+        console.log(`❌ Error:`, error.message);
         res.status(500).json({ error: "Error interno" });
     }
 });
 
 // Endpoint 3: BCV Scraper Directo (EXCLUSIVAMENTE DESDE BCV.ORG.VE CON PUPPETEER)
 app.get('/api/bcv', async (req, res) => {
+    await ensureBrowser();
     console.log(`\n📥 [APP] Solicitando tasa oficial directamente de bcv.org.ve...`);
     let bcvPage;
     try {
         bcvPage = await browser.newPage();
         await bcvPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
         
-        // Desactivamos recursos pesados para agilizar la carga
+        // Bloqueamos imágenes y css para que cargue ultra rápido
         await bcvPage.setRequestInterception(true);
         bcvPage.on('request', (request) => {
-            if (['image', 'font', 'media'].includes(request.resourceType())) {
+            if (['image', 'font', 'media', 'stylesheet'].includes(request.resourceType())) {
                 request.abort();
             } else {
                 request.continue();
