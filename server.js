@@ -3,7 +3,11 @@ const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const cors = require('cors');
 
-puppeteer.use(StealthPlugin());
+// 1. Configuramos el plugin Stealth y eliminamos la evasión que causa el Crash en Railway
+const stealth = StealthPlugin();
+stealth.enabledEvasions.delete('sourceurl');
+puppeteer.use(stealth);
+
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -14,7 +18,14 @@ let page;
 async function initBrowser() {
     browser = await puppeteer.launch({ 
         headless: true, 
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
+        args: [
+            '--no-sandbox', 
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage', // Soluciona el problema de memoria compartida en la nube
+            '--disable-gpu',           // Apaga la aceleración gráfica (innecesario en servidores)
+            '--no-zygote',
+            '--single-process'         // Reduce drásticamente el consumo de RAM
+        ]
     }); 
     page = await browser.newPage();
     console.log("⏳ Abriendo Binance para inicializar motores...");
