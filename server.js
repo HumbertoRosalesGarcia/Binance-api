@@ -12,16 +12,18 @@ app.use(cors());
 app.use(express.json());
 
 let browser;
+let cachedBcvRate = 0.0;
+let isFetchingBcv = false;
 
-// Inicializa el navegador con bypass de SSL para el BCV
+// Inicialización de Puppeteer con banderas para omitir errores de SSL del BCV
 async function initBrowser() {
     if (browser) {
         try { await browser.close(); } catch (e) {}
     }
-    console.log("⏳ Inicializando Puppeteer...");
+    console.log("⏳ [SISTEMA] Iniciando motor Puppeteer...");
     browser = await puppeteer.launch({ 
         headless: true, 
-        ignoreHTTPSErrors: true, // CLAVE PARA EL BCV
+        ignoreHTTPSErrors: true,
         args: [
             '--no-sandbox', 
             '--disable-setuid-sandbox',
@@ -29,25 +31,110 @@ async function initBrowser() {
             '--disable-gpu',           
             '--no-zygote',
             '--single-process',
-            '--ignore-certificate-errors' // CLAVE PARA EL BCV
+            '--ignore-certificate-errors',
+            '--ignore-certificate-errors-spki-list'
         ]
     }); 
-    console.log("✅ Puppeteer listo.");
+    console.log("✅ [SISTEMA] Puppeteer listo para operar.");
 }
 
-// Función vital en Railway para revivir el navegador si se duerme
 async function ensureBrowser() {
     if (!browser || !browser.isConnected()) {
-        console.log("⚠️ Navegador desconectado. Reiniciando...");
+        console.log("⚠️ [SISTEMA] Navegador desconectado. Reiniciando...");
         await initBrowser();
     }
 }
 
-// Endpoint 1: Estadísticas (Binance P2P)
+// --- FUNCIÓN DE SCRAPING BCV EN VIVO CON LOGS DETALLADOS ---
+async function fetchBcvRateFromWeb() {
+    if (isFetchingBcv) return cachedBcvRate;
+    isFetchingBcv = true;
+
+    await ensureBrowser();
+    console.log("\n========================================");
+    console.log("🌐 [BCV SCRAPER] Conectando a https://www.bcv.org.ve/ ...");
+    
+    let bcvPage;
+    try {
+        bcvPage = await browser.newPage();
+        await bcvPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+        
+        // Interceptamos recursos innecesarios para acelerar la carga
+        await bcvPage.setRequestInterception(true);
+        bcvPage.on('request', (req) => {
+            if (['image', 'font', 'media', 'stylesheet'].includes(req.resourceType())) {
+                req.abort();
+            } else {
+                req.continue();
+            }
+        });
+
+        await bcvPage.goto('https://www.bcv.org.ve/', { waitUntil: 'domcontentloaded', timeout: 35000 });
+        console.log("📄 [BCV SCRAPER] Página de BCV cargada. Buscando selector DOM (#dolar strong)...");
+
+        const rawText = await bcvPage.evaluate(() => {
+            const el = document.querySelector('#dolar .strong-tb') || 
+                       document.querySelector('#dolar strong') || 
+                       document.querySelector('#dolar span');
+            return el ? el.innerText.trim() : null;
+        });
+
+        await bcvPage.close();
+
+        if (rawText) {
+            console.log(`🔍 [BCV SCRAPER] Texto hallado en DOM: "${rawText}"`);
+            // Convertimos formato "742,22920000" a float 742.2292
+            const cleanText = rawText.replace(/\./g, '').replace(',', '.');
+            const parsedRate = parseFloat(cleanText);
+
+            if (!isNaN(parsedRate) && parsedRate > 0) {
+                cachedBcvRate = parsedRate;
+                console.log(`🟢 [BCV SCRAPER] ¡ÉXITO! Tasa BCV Oficial actualizada: ${cachedBcvRate}`);
+                console.log("========================================\n");
+                isFetchingBcv = false;
+                return cachedBcvRate;
+            }
+        }
+        
+        console.log("❌ [BCV SCRAPER] No se pudo extraer un número válido del DOM.");
+    } catch (error) {
+        if (bcvPage && !bcvPage.isClosed()) await bcvPage.close();
+        console.log(`❌ [BCV SCRAPER] Error en la conexión/scraping: ${error.message}`);
+    }
+
+    console.log("========================================\n");
+    isFetchingBcv = false;
+    return cachedBcvRate;
+}
+
+// Bucle automático de actualización cada 2 minutos
+function startBcvAutoRefresh() {
+    fetchBcvRateFromWeb();
+    setInterval(() => {
+        console.log("⏰ [CRON] Ejecutando actualización programada del BCV...");
+        fetchBcvRateFromWeb();
+    }, 120000); // 2 minutos
+}
+
+// --- ENDPOINT BCV PARA LA APP ---
+app.get('/api/bcv', async (req, res) => {
+    console.log(`📥 [APP ANDROID] Petición recibida en /api/bcv`);
+    
+    // Si aún no tenemos tasa guardada, intentamos obtenerla inmediatamente
+    if (cachedBcvRate === 0.0) {
+        console.log("⏳ [APP ANDROID] Tasa en caché vacía. Consultando BCV en tiempo real...");
+        await fetchBcvRateFromWeb();
+    }
+
+    console.log(`🟢 [APP ANDROID] Enviando tasa BCV a la App: ${cachedBcvRate}`);
+    res.json({ code: "000000", tasa: cachedBcvRate });
+});
+
+// Endpoint 1: Estadísticas Binance P2P
 app.get('/api/merchant/:userNo', async (req, res) => {
     await ensureBrowser();
     const userNo = req.params.userNo;
-    console.log(`\n📥 Pidiendo estadísticas para: ${userNo}`);
+    console.log(`\n📥 [APP ANDROID] Pidiendo estadísticas para: ${userNo}`);
     let page;
     try {
         page = await browser.newPage();
@@ -59,19 +146,20 @@ app.get('/api/merchant/:userNo', async (req, res) => {
             return response.json();
         }, userNo);
         await page.close();
+        console.log(`🟢 [APP ANDROID] Estadísticas enviadas a la App.`);
         res.json(data);
     } catch (error) {
         if (page && !page.isClosed()) await page.close();
-        console.log(`❌ Error:`, error.message);
+        console.log(`❌ Error Binance Merchant:`, error.message);
         res.status(500).json({ error: "Error interno" });
     }
 });
 
-// Endpoint 2: Comentarios (Binance P2P)
+// Endpoint 2: Comentarios Binance P2P
 app.post('/api/comments', async (req, res) => {
     await ensureBrowser();
     const { userNo, page = 1 } = req.body;
-    console.log(`📥 Pidiendo comentarios para: ${userNo} | Pág: ${page}`);
+    console.log(`📥 [APP ANDROID] Pidiendo comentarios para: ${userNo} | Pág: ${page}`);
     
     let tempPage;
     try {
@@ -122,61 +210,12 @@ app.post('/api/comments', async (req, res) => {
         if (posList.length > 0) combinedReviews = combinedReviews.concat(procesarComentarios(posList, "POSITIVE"));
         if (negList.length > 0) combinedReviews = combinedReviews.concat(procesarComentarios(negList, "NEGATIVE"));
         
+        console.log(`🟢 [APP ANDROID] Comentarios procesados y enviados.`);
         res.json({ code: "000000", data: { data: combinedReviews, totalPositivos: totalPos, totalNegativos: totalNeg } });
     } catch (error) {
         if (tempPage && !tempPage.isClosed()) await tempPage.close();
-        console.log(`❌ Error:`, error.message);
+        console.log(`❌ Error Binance Comments:`, error.message);
         res.status(500).json({ error: "Error interno" });
-    }
-});
-
-// Endpoint 3: BCV Scraper Directo (EXCLUSIVAMENTE DESDE BCV.ORG.VE CON PUPPETEER)
-app.get('/api/bcv', async (req, res) => {
-    await ensureBrowser();
-    console.log(`\n📥 [APP] Solicitando tasa oficial directamente de bcv.org.ve...`);
-    let bcvPage;
-    try {
-        bcvPage = await browser.newPage();
-        await bcvPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-        
-        // Bloqueamos imágenes y css para que cargue ultra rápido
-        await bcvPage.setRequestInterception(true);
-        bcvPage.on('request', (request) => {
-            if (['image', 'font', 'media', 'stylesheet'].includes(request.resourceType())) {
-                request.abort();
-            } else {
-                request.continue();
-            }
-        });
-
-        await bcvPage.goto('https://www.bcv.org.ve/', { waitUntil: 'domcontentloaded', timeout: 35000 });
-
-        const bcvRate = await bcvPage.evaluate(() => {
-            const dolarDiv = document.getElementById('dolar');
-            if (dolarDiv) {
-                const strongTag = dolarDiv.querySelector('strong');
-                if (strongTag) {
-                    const text = strongTag.innerText.trim().replace(',', '.');
-                    return parseFloat(text);
-                }
-            }
-            return null;
-        });
-
-        await bcvPage.close();
-
-        if (bcvRate && bcvRate > 0) {
-            console.log(`🟢 [BCV OFICIAL] Tasa obtenida de bcv.org.ve: ${bcvRate}`);
-            return res.json({ code: "000000", tasa: bcvRate });
-        } else {
-            console.log(`❌ No se encontró el selector del dólar en el HTML.`);
-            return res.status(500).json({ error: "No se encontró el elemento en la web del BCV" });
-        }
-
-    } catch (error) {
-        if (bcvPage && !bcvPage.isClosed()) await bcvPage.close();
-        console.log(`❌ Error en Puppeteer al consultar BCV:`, error.message);
-        res.status(500).json({ error: `Error en servidor: ${error.message}` });
     }
 });
 
@@ -184,4 +223,5 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', async () => {
     console.log(`🚀 Servidor corriendo en el puerto ${PORT}`);
     await initBrowser();
+    startBcvAutoRefresh();
 });
