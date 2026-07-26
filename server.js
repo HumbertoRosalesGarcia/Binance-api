@@ -17,25 +17,29 @@ let page;
 async function initBrowser() {
     browser = await puppeteer.launch({ 
         headless: true, 
+        ignoreHTTPSErrors: true, // EVITA BLOQUEOS POR CERTIFICADO SSL DEL BCV
         args: [
             '--no-sandbox', 
             '--disable-setuid-sandbox',
             '--disable-dev-shm-usage',
             '--disable-gpu',           
             '--no-zygote',
-            '--single-process'         
+            '--single-process',
+            '--ignore-certificate-errors', // OBLIGATORIO PARA CUMPIR CON EL BCV
+            '--ignore-certificate-errors-spki-list'
         ]
     }); 
     page = await browser.newPage();
-    console.log("⏳ Abriendo Binance para inicializar motores...");
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
     
+    console.log("⏳ Abriendo Binance para inicializar motores...");
     await page.goto('https://p2p.binance.com/es-LA', { waitUntil: 'domcontentloaded', timeout: 60000 });
     await new Promise(resolve => setTimeout(resolve, 5000));
     
     console.log("✅ Navegador listo. Esperando a la App...");
 }
 
-// Endpoint 1: Estadísticas (Binance)
+// Endpoint 1: Estadísticas (Binance P2P)
 app.get('/api/merchant/:userNo', async (req, res) => {
     const userNo = req.params.userNo;
     console.log(`\n📥 [APP] Pidiendo estadísticas para: ${userNo}`);
@@ -50,12 +54,12 @@ app.get('/api/merchant/:userNo', async (req, res) => {
         console.log(`🟢 [APP] Estadísticas enviadas.`);
         res.json(data);
     } catch (error) {
-        console.log(`❌ Error:`, error);
+        console.log(`❌ Error al extraer estadísticas:`, error);
         res.status(500).json({ error: "Error interno" });
     }
 });
 
-// Endpoint 2: Comentarios (Binance)
+// Endpoint 2: Comentarios (Binance P2P)
 app.post('/api/comments', async (req, res) => {
     const { userNo, page = 1 } = req.body;
     console.log(`📥 [APP] Pidiendo comentarios para: ${userNo} | Pág: ${page}`);
@@ -63,6 +67,7 @@ app.post('/api/comments', async (req, res) => {
     let tempPage;
     try {
         tempPage = await browser.newPage();
+        await tempPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
         await tempPage.goto(`https://p2p.binance.com/es-LA/advertiserDetail?advertiserNo=${userNo}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
         
         const reviewsData = await tempPage.evaluate(async (uid, pageNum) => {
@@ -117,54 +122,52 @@ app.post('/api/comments', async (req, res) => {
     }
 });
 
-// Endpoint 3: BCV Scraper Directo en Vivo
+// Endpoint 3: BCV Scraper Directo (EXCLUSIVAMENTE DESDE BCV.ORG.VE CON PUPPETEER)
 app.get('/api/bcv', async (req, res) => {
-    console.log(`\n📥 [APP] Solicitando tasa BCV en vivo...`);
+    console.log(`\n📥 [APP] Solicitando tasa oficial directamente de bcv.org.ve...`);
     let bcvPage;
     try {
         bcvPage = await browser.newPage();
-        await bcvPage.setCacheEnabled(false);
+        await bcvPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+        
+        // Desactivamos recursos pesados para agilizar la carga
         await bcvPage.setRequestInterception(true);
         bcvPage.on('request', (request) => {
-            if (['image', 'stylesheet', 'font', 'media'].includes(request.resourceType())) request.abort();
-            else request.continue();
+            if (['image', 'font', 'media'].includes(request.resourceType())) {
+                request.abort();
+            } else {
+                request.continue();
+            }
         });
-        
-        await bcvPage.goto('https://www.bcv.org.ve/', { waitUntil: 'domcontentloaded', timeout: 25000 });
-        
+
+        await bcvPage.goto('https://www.bcv.org.ve/', { waitUntil: 'domcontentloaded', timeout: 35000 });
+
         const bcvRate = await bcvPage.evaluate(() => {
-            const el = document.querySelector('#dolar strong') || document.querySelector('#dolar span');
-            if (el) {
-                const text = el.innerText.trim().replace(',', '.');
-                return parseFloat(text);
+            const dolarDiv = document.getElementById('dolar');
+            if (dolarDiv) {
+                const strongTag = dolarDiv.querySelector('strong');
+                if (strongTag) {
+                    const text = strongTag.innerText.trim().replace(',', '.');
+                    return parseFloat(text);
+                }
             }
             return null;
         });
-        
+
         await bcvPage.close();
 
         if (bcvRate && bcvRate > 0) {
-            console.log(`🟢 [APP] BCV Oficial en vivo: ${bcvRate}`);
+            console.log(`🟢 [BCV OFICIAL] Tasa obtenida de bcv.org.ve: ${bcvRate}`);
             return res.json({ code: "000000", tasa: bcvRate });
         } else {
-            throw new Error("No se pudo extraer el valor del DOM");
+            console.log(`❌ No se encontró el selector del dólar en el HTML.`);
+            return res.status(500).json({ error: "No se encontró el elemento en la web del BCV" });
         }
+
     } catch (error) {
         if (bcvPage && !bcvPage.isClosed()) await bcvPage.close();
-        console.log(`⚠️ Error en scraping directo BCV (${error.message}). Consultando respaldo API...`);
-        
-        try {
-            const apiRes = await fetch("https://ve.dolarapi.com/v1/dolares/oficial", { cache: "no-store" });
-            if (apiRes.ok) {
-                const apiData = await apiRes.json();
-                if (apiData && apiData.promedio) {
-                    console.log(`🟢 [APP] BCV Respaldo API: ${apiData.promedio}`);
-                    return res.json({ code: "000000", tasa: apiData.promedio });
-                }
-            }
-        } catch (e) { }
-
-        res.status(500).json({ error: "No se pudo obtener la tasa BCV" });
+        console.log(`❌ Error en Puppeteer al consultar BCV:`, error.message);
+        res.status(500).json({ error: `Error en servidor: ${error.message}` });
     }
 });
 
