@@ -3,7 +3,6 @@ const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const cors = require('cors');
 
-// 1. Configuramos el plugin Stealth y eliminamos la evasión que causa el Crash en Railway
 const stealth = StealthPlugin();
 stealth.enabledEvasions.delete('sourceurl');
 puppeteer.use(stealth);
@@ -36,7 +35,7 @@ async function initBrowser() {
     console.log("✅ Navegador listo. Esperando a la App...");
 }
 
-// Endpoint 1: Estadísticas 
+// Endpoint 1: Estadísticas (Binance)
 app.get('/api/merchant/:userNo', async (req, res) => {
     const userNo = req.params.userNo;
     console.log(`\n📥 [APP] Pidiendo estadísticas para: ${userNo}`);
@@ -56,7 +55,7 @@ app.get('/api/merchant/:userNo', async (req, res) => {
     }
 });
 
-// Endpoint 2: Comentarios 
+// Endpoint 2: Comentarios (Binance)
 app.post('/api/comments', async (req, res) => {
     const { userNo, page = 1 } = req.body;
     console.log(`📥 [APP] Pidiendo comentarios para: ${userNo} | Pág: ${page}`);
@@ -118,60 +117,54 @@ app.post('/api/comments', async (req, res) => {
     }
 });
 
-// Endpoint 3: BCV Scraper (Múltiples métodos para 100% de fiabilidad)
+// Endpoint 3: BCV Scraper Directo en Vivo
 app.get('/api/bcv', async (req, res) => {
-    console.log(`\n📥 [APP] Solicitando tasa BCV...`);
-    
-    // Método 1: API Directa Rápida
-    try {
-        const apiRes = await fetch("https://ve.dolarapi.com/v1/dolares/oficial");
-        if (apiRes.ok) {
-            const apiData = await apiRes.json();
-            if (apiData && apiData.promedio) {
-                console.log(`🟢 [APP] BCV (Vía API): ${apiData.promedio}`);
-                return res.json({ code: "000000", tasa: apiData.promedio });
-            }
-        }
-    } catch (e) { console.log(`⚠️ API Dolar no respondió...`); }
-
-    // Método 2: Segunda API
-    try {
-        const pyRes = await fetch("https://pydolarvenezuela-api.vercel.app/api/v1/dollar?page=bcv");
-        if (pyRes.ok) {
-            const pyData = await pyRes.json();
-            if (pyData && pyData.monitors && pyData.monitors.usd) {
-                console.log(`🟢 [APP] BCV (Vía API 2): ${pyData.monitors.usd.price}`);
-                return res.json({ code: "000000", tasa: pyData.monitors.usd.price });
-            }
-        }
-    } catch (e) { console.log(`⚠️ API 2 falló, activando robot Puppeteer...`); }
-
-    // Método 3: Robot Extractor (Respaldo final)
+    console.log(`\n📥 [APP] Solicitando tasa BCV en vivo...`);
     let bcvPage;
     try {
         bcvPage = await browser.newPage();
+        await bcvPage.setCacheEnabled(false);
         await bcvPage.setRequestInterception(true);
         bcvPage.on('request', (request) => {
             if (['image', 'stylesheet', 'font', 'media'].includes(request.resourceType())) request.abort();
             else request.continue();
         });
-        await bcvPage.goto('https://www.bcv.org.ve/', { waitUntil: 'domcontentloaded', timeout: 30000 });
+        
+        await bcvPage.goto('https://www.bcv.org.ve/', { waitUntil: 'domcontentloaded', timeout: 25000 });
+        
         const bcvRate = await bcvPage.evaluate(() => {
-            const el = document.querySelector('#dolar strong');
-            return el ? parseFloat(el.innerText.trim().replace(',', '.')) : null;
+            const el = document.querySelector('#dolar strong') || document.querySelector('#dolar span');
+            if (el) {
+                const text = el.innerText.trim().replace(',', '.');
+                return parseFloat(text);
+            }
+            return null;
         });
+        
         await bcvPage.close();
 
-        if (bcvRate) {
-            console.log(`🟢 [APP] BCV (Vía Web Scraper): ${bcvRate}`);
+        if (bcvRate && bcvRate > 0) {
+            console.log(`🟢 [APP] BCV Oficial en vivo: ${bcvRate}`);
             return res.json({ code: "000000", tasa: bcvRate });
         } else {
-            throw new Error("No se halló el precio en la web");
+            throw new Error("No se pudo extraer el valor del DOM");
         }
     } catch (error) {
         if (bcvPage && !bcvPage.isClosed()) await bcvPage.close();
-        console.log(`❌ Error al extraer BCV`);
-        res.status(500).json({ error: "No se pudo obtener la tasa" });
+        console.log(`⚠️ Error en scraping directo BCV (${error.message}). Consultando respaldo API...`);
+        
+        try {
+            const apiRes = await fetch("https://ve.dolarapi.com/v1/dolares/oficial", { cache: "no-store" });
+            if (apiRes.ok) {
+                const apiData = await apiRes.json();
+                if (apiData && apiData.promedio) {
+                    console.log(`🟢 [APP] BCV Respaldo API: ${apiData.promedio}`);
+                    return res.json({ code: "000000", tasa: apiData.promedio });
+                }
+            }
+        } catch (e) { }
+
+        res.status(500).json({ error: "No se pudo obtener la tasa BCV" });
     }
 });
 
