@@ -21,10 +21,10 @@ async function initBrowser() {
         args: [
             '--no-sandbox', 
             '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage', // Soluciona el problema de memoria compartida en la nube
-            '--disable-gpu',           // Apaga la aceleración gráfica (innecesario en servidores)
+            '--disable-dev-shm-usage',
+            '--disable-gpu',           
             '--no-zygote',
-            '--single-process'         // Reduce drásticamente el consumo de RAM
+            '--single-process'         
         ]
     }); 
     page = await browser.newPage();
@@ -36,7 +36,7 @@ async function initBrowser() {
     console.log("✅ Navegador listo. Esperando a la App...");
 }
 
-// Endpoint 1: Estadísticas 
+// Endpoint 1: Estadísticas (Binance)
 app.get('/api/merchant/:userNo', async (req, res) => {
     const userNo = req.params.userNo;
     console.log(`\n📥 [APP ANDROID] Pidiendo estadísticas para: ${userNo}`);
@@ -57,7 +57,7 @@ app.get('/api/merchant/:userNo', async (req, res) => {
     }
 });
 
-// Endpoint 2: Comentarios (Nombres Reales, Etiquetas y Totales Globales)
+// Endpoint 2: Comentarios (Binance)
 app.post('/api/comments', async (req, res) => {
     const { userNo, page = 1 } = req.body;
     console.log(`📥 [APP ANDROID] Pidiendo comentarios para: ${userNo} | Página solicitada: ${page}`);
@@ -83,7 +83,6 @@ app.post('/api/comments', async (req, res) => {
             };
 
             try {
-                // Petición de Comentarios Positivos (rating: 1)
                 const resPos = await fetch(url, { 
                     method: 'POST', 
                     headers: headers, 
@@ -91,7 +90,6 @@ app.post('/api/comments', async (req, res) => {
                 });
                 const jsonPos = await resPos.json();
 
-                // Petición de Comentarios Negativos (rating: 3, como dicta el JSON)
                 const resNeg = await fetch(url, { 
                     method: 'POST', 
                     headers: headers, 
@@ -107,7 +105,6 @@ app.post('/api/comments', async (req, res) => {
 
         await tempPage.close();
 
-        // Extraer los totales exactos desde "countsPerRating"
         let totalPos = 0;
         let totalNeg = 0;
         
@@ -123,7 +120,6 @@ app.post('/api/comments', async (req, res) => {
 
         const procesarComentarios = (array, tipo) => {
             return array.map(item => {
-                // Mapeo exacto basado en tu JSON
                 let name = "Usuario anónimo";
                 if (item.reviewer && item.reviewer.nickname) name = item.reviewer.nickname;
                 else if (item.nickname) name = item.nickname;
@@ -134,7 +130,6 @@ app.post('/api/comments', async (req, res) => {
                 let content = item.comments || item.content || "";
                 if (content === "null") content = "";
 
-                // Extraer el primer Tag si existe en reviewTagList
                 let tag = "";
                 if (item.reviewTagList && item.reviewTagList.length > 0) {
                     tag = item.reviewTagList[0];
@@ -168,6 +163,52 @@ app.post('/api/comments', async (req, res) => {
     } catch (error) {
         if (tempPage && !tempPage.isClosed()) await tempPage.close();
         console.log(`❌ Error crítico al extraer comentarios:`, error);
+        res.status(500).json({ error: "Error interno" });
+    }
+});
+
+// Endpoint 3: BCV Scraper (NUEVO)
+app.get('/api/bcv', async (req, res) => {
+    console.log(`\n📥 [APP ANDROID] Solicitando tasa BCV...`);
+    let bcvPage;
+    try {
+        bcvPage = await browser.newPage();
+        
+        // Bloquear imágenes y CSS para que la página del BCV cargue en 1 segundo
+        await bcvPage.setRequestInterception(true);
+        bcvPage.on('request', (request) => {
+            if (['image', 'stylesheet', 'font', 'media'].includes(request.resourceType())) {
+                request.abort();
+            } else {
+                request.continue();
+            }
+        });
+
+        await bcvPage.goto('https://www.bcv.org.ve/', { waitUntil: 'domcontentloaded', timeout: 30000 });
+        
+        const bcvRate = await bcvPage.evaluate(() => {
+            const element = document.querySelector('#dolar strong');
+            if (element) {
+                // El texto del BCV viene como " 36,54000000 ". Lo limpiamos.
+                const text = element.innerText.trim().replace(',', '.');
+                return parseFloat(text);
+            }
+            return null;
+        });
+
+        await bcvPage.close();
+
+        if (bcvRate) {
+            console.log(`🟢 [APP ANDROID] Tasa BCV obtenida: ${bcvRate}`);
+            res.json({ code: "000000", tasa: bcvRate });
+        } else {
+            console.log(`❌ Error: No se encontró el precio en la web del BCV`);
+            res.status(500).json({ error: "No se pudo leer la tasa" });
+        }
+
+    } catch (error) {
+        if (bcvPage && !bcvPage.isClosed()) await bcvPage.close();
+        console.log(`❌ Error crítico al extraer BCV:`, error);
         res.status(500).json({ error: "Error interno" });
     }
 });
