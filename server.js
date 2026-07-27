@@ -2,6 +2,7 @@ const express = require('express');
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const cors = require('cors');
+const cron = require('node-cron'); // <--- NUEVA LIBRERÍA PARA LAS 5PM
 
 const stealth = StealthPlugin();
 stealth.enabledEvasions.delete('sourceurl');
@@ -70,21 +71,28 @@ async function fetchBcvRateFromWeb() {
         });
 
         await bcvPage.goto('https://www.bcv.org.ve/', { waitUntil: 'domcontentloaded', timeout: 35000 });
-        console.log("📄 [BCV SCRAPER] Página de BCV cargada. Buscando selector DOM (#dolar strong)...");
+        
+        // NUEVO: Esperamos explícitamente a que el contenedor del dólar aparezca en el HTML
+        console.log("📄 [BCV SCRAPER] Página cargada. Esperando a que el servidor del BCV imprima la etiqueta #dolar...");
+        await bcvPage.waitForSelector('#dolar', { timeout: 15000 }).catch(() => console.log("⚠️ [BCV SCRAPER] El selector tardó mucho, intentando extraer de todos modos."));
 
         const rawText = await bcvPage.evaluate(() => {
+            // Buscamos directamente la estructura exacta que usa el BCV hoy
             const el = document.querySelector('#dolar .strong-tb') || 
                        document.querySelector('#dolar strong') || 
                        document.querySelector('#dolar span');
-            return el ? el.innerText.trim() : null;
+            return el ? el.innerText : null;
         });
 
         await bcvPage.close();
 
         if (rawText) {
-            console.log(`🔍 [BCV SCRAPER] Texto hallado en DOM: "${rawText}"`);
-            // Convertimos formato "742,22920000" a float 742.2292
-            const cleanText = rawText.replace(/\./g, '').replace(',', '.');
+            console.log(`🔍 [BCV SCRAPER] Texto hallado en DOM: "${rawText.trim()}"`);
+            
+            // NUEVO: Limpieza estricta para quitar espacios, letras o saltos de línea basura
+            let cleanText = rawText.replace(/[^0-9,.]/g, ''); 
+            cleanText = cleanText.replace(/\./g, '').replace(',', '.');
+            
             const parsedRate = parseFloat(cleanText);
 
             if (!isNaN(parsedRate) && parsedRate > 0) {
@@ -107,20 +115,35 @@ async function fetchBcvRateFromWeb() {
     return cachedBcvRate;
 }
 
-// Bucle automático de actualización cada 2 minutos
+// --- PROGRAMACIÓN DE ACTUALIZACIÓN (5:00 PM) ---
 function startBcvAutoRefresh() {
+    // 1. Ejecución inmediata al encender el servidor para tener un dato inicial
     fetchBcvRateFromWeb();
-    setInterval(() => {
-        console.log("⏰ [CRON] Ejecutando actualización programada del BCV...");
+
+    // 2. Ejecución programada estrictamente a las 5:00 PM hora Venezuela
+    // Formato cron: Minuto(0) Hora(17) DiaMes(*) Mes(*) DiaSemana(*)
+    cron.schedule('0 17 * * *', () => {
+        console.log("⏰ [CRON] Son las 5:00 PM. Ejecutando escaneo web en el BCV...");
         fetchBcvRateFromWeb();
-    }, 120000); // 2 minutos
+    }, {
+        scheduled: true,
+        timezone: "America/Caracas" // Asegura que las 17:00 sean hora venezolana
+    });
+    
+    // Opcional: Un chequeo de seguridad a las 7:00 AM todos los días por si la página se actualiza de madrugada
+    cron.schedule('0 7 * * *', () => {
+        console.log("⏰ [CRON] Chequeo matutino de seguridad del BCV...");
+        fetchBcvRateFromWeb();
+    }, {
+        scheduled: true,
+        timezone: "America/Caracas"
+    });
 }
 
 // --- ENDPOINT BCV PARA LA APP ---
 app.get('/api/bcv', async (req, res) => {
     console.log(`📥 [APP ANDROID] Petición recibida en /api/bcv`);
     
-    // Si aún no tenemos tasa guardada, intentamos obtenerla inmediatamente
     if (cachedBcvRate === 0.0) {
         console.log("⏳ [APP ANDROID] Tasa en caché vacía. Consultando BCV en tiempo real...");
         await fetchBcvRateFromWeb();
