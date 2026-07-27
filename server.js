@@ -2,7 +2,7 @@ const express = require('express');
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const cors = require('cors');
-const cron = require('node-cron'); // <--- NUEVA LIBRERÍA PARA LAS 5PM
+const cron = require('node-cron'); 
 
 const stealth = StealthPlugin();
 stealth.enabledEvasions.delete('sourceurl');
@@ -72,15 +72,13 @@ async function fetchBcvRateFromWeb() {
 
         await bcvPage.goto('https://www.bcv.org.ve/', { waitUntil: 'domcontentloaded', timeout: 35000 });
         
-        // NUEVO: Esperamos explícitamente a que el contenedor del dólar aparezca en el HTML
+        // MODIFICACIÓN: Buscamos el elemento div con id "dolar"
         console.log("📄 [BCV SCRAPER] Página cargada. Esperando a que el servidor del BCV imprima la etiqueta #dolar...");
         await bcvPage.waitForSelector('#dolar', { timeout: 15000 }).catch(() => console.log("⚠️ [BCV SCRAPER] El selector tardó mucho, intentando extraer de todos modos."));
 
         const rawText = await bcvPage.evaluate(() => {
-            // Buscamos directamente la estructura exacta que usa el BCV hoy
-            const el = document.querySelector('#dolar .strong-tb') || 
-                       document.querySelector('#dolar strong') || 
-                       document.querySelector('#dolar span');
+            // MODIFICACIÓN: Extraemos el texto del selector .centrado fuerte que se encuentra dentro del div con id dolar
+            const el = document.querySelector('#dolar .centrado strong');
             return el ? el.innerText : null;
         });
 
@@ -89,7 +87,7 @@ async function fetchBcvRateFromWeb() {
         if (rawText) {
             console.log(`🔍 [BCV SCRAPER] Texto hallado en DOM: "${rawText.trim()}"`);
             
-            // NUEVO: Limpieza estricta para quitar espacios, letras o saltos de línea basura
+            // Limpieza estricta para quitar espacios, letras o saltos de línea basura
             let cleanText = rawText.replace(/[^0-9,.]/g, ''); 
             cleanText = cleanText.replace(/\./g, '').replace(',', '.');
             
@@ -127,7 +125,7 @@ function startBcvAutoRefresh() {
         fetchBcvRateFromWeb();
     }, {
         scheduled: true,
-        timezone: "America/Caracas" // Asegura que las 17:00 sean hora venezolana
+        timezone: "America/Caracas" 
     });
     
     // Opcional: Un chequeo de seguridad a las 7:00 AM todos los días por si la página se actualiza de madrugada
