@@ -1,7 +1,7 @@
 const express = require('express');
-const vanillaPuppeteer = require('puppeteer');
+const vanillaPuppeteer = require('puppeteer'); 
 const { addExtra } = require('puppeteer-extra');
-const puppeteer = addExtra(vanillaPuppeteer);
+const puppeteer = addExtra(vanillaPuppeteer);  
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const cors = require('cors');
 const cron = require('node-cron'); 
@@ -18,6 +18,7 @@ let browser;
 let cachedBcvRate = 0.0;
 let isFetchingBcv = false;
 
+// Inicialización de Puppeteer con banderas para omitir errores de SSL del BCV
 async function initBrowser() {
     if (browser) {
         try { await browser.close(); } catch (e) {}
@@ -26,7 +27,7 @@ async function initBrowser() {
     browser = await puppeteer.launch({ 
         headless: true, 
         ignoreHTTPSErrors: true,
-        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
+        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium', 
         args: [
             '--no-sandbox', 
             '--disable-setuid-sandbox',
@@ -48,6 +49,7 @@ async function ensureBrowser() {
     }
 }
 
+// --- FUNCIÓN DE SCRAPING BCV EN VIVO CON LOGS DETALLADOS ---
 async function fetchBcvRateFromWeb() {
     if (isFetchingBcv) return cachedBcvRate;
     isFetchingBcv = true;
@@ -73,9 +75,9 @@ async function fetchBcvRateFromWeb() {
         await bcvPage.goto('https://www.bcv.org.ve/', { waitUntil: 'domcontentloaded', timeout: 35000 });
         
         const exactSelector = '#dolar .field-content .row.recuadrotsmc .centrado.textp strong.strong-tb';
-        console.log("📄 [BCV SCRAPER] Página cargada. Esperando a que el servidor del BCV imprima la tasa...");
         
-        await bcvPage.waitForSelector(exactSelector, { timeout: 15000 }).catch(() => console.log("⚠️ [BCV SCRAPER] El selector tardó mucho."));
+        console.log("📄 [BCV SCRAPER] Página cargada. Esperando a que el servidor del BCV imprima la tasa...");
+        await bcvPage.waitForSelector(exactSelector, { timeout: 15000 }).catch(() => console.log("⚠️ [BCV SCRAPER] El selector tardó mucho, intentando extraer de todos modos."));
 
         const rawText = await bcvPage.evaluate((sel) => {
             const el = document.querySelector(sel);
@@ -85,18 +87,26 @@ async function fetchBcvRateFromWeb() {
         await bcvPage.close();
 
         if (rawText) {
-            console.log(`🔍 [BCV SCRAPER] Texto hallado: "${rawText.trim()}"`);
-            let cleanText = rawText.replace(/[^0-9,.]/g, '').replace(/\./g, '').replace(',', '.');
+            console.log(`🔍 [BCV SCRAPER] Texto hallado en DOM: "${rawText.trim()}"`);
+            
+            let cleanText = rawText.replace(/[^0-9,.]/g, ''); 
+            cleanText = cleanText.replace(/\./g, '').replace(',', '.');
+            
             const parsedRate = parseFloat(cleanText);
 
             if (!isNaN(parsedRate) && parsedRate > 0) {
                 cachedBcvRate = parsedRate;
-                console.log(`🟢 [BCV SCRAPER] ¡ÉXITO! Tasa BCV Oficial: ${cachedBcvRate}`);
+                console.log(`🟢 [BCV SCRAPER] ¡ÉXITO! Tasa BCV Oficial actualizada: ${cachedBcvRate}`);
+                console.log("========================================\n");
+                isFetchingBcv = false;
+                return cachedBcvRate;
             }
         }
+        
+        console.log("❌ [BCV SCRAPER] No se pudo extraer un número válido del DOM.");
     } catch (error) {
         if (bcvPage && !bcvPage.isClosed()) await bcvPage.close();
-        console.log(`❌ [BCV SCRAPER] Error: ${error.message}`);
+        console.log(`❌ [BCV SCRAPER] Error en la conexión/scraping: ${error.message}`);
     }
 
     console.log("========================================\n");
@@ -104,18 +114,41 @@ async function fetchBcvRateFromWeb() {
     return cachedBcvRate;
 }
 
+// --- PROGRAMACIÓN DE ACTUALIZACIÓN (5:00 PM) ---
 function startBcvAutoRefresh() {
     fetchBcvRateFromWeb();
-    cron.schedule('0 17 * * *', () => { fetchBcvRateFromWeb(); }, { scheduled: true, timezone: "America/Caracas" });
-    cron.schedule('0 7 * * *', () => { fetchBcvRateFromWeb(); }, { scheduled: true, timezone: "America/Caracas" });
+
+    cron.schedule('0 17 * * *', () => {
+        console.log("⏰ [CRON] Son las 5:00 PM. Ejecutando escaneo web en el BCV...");
+        fetchBcvRateFromWeb();
+    }, {
+        scheduled: true,
+        timezone: "America/Caracas" 
+    });
+    
+    cron.schedule('0 7 * * *', () => {
+        console.log("⏰ [CRON] Chequeo matutino de seguridad del BCV...");
+        fetchBcvRateFromWeb();
+    }, {
+        scheduled: true,
+        timezone: "America/Caracas"
+    });
 }
 
+// --- ENDPOINT BCV PARA LA APP ---
 app.get('/api/bcv', async (req, res) => {
-    if (cachedBcvRate === 0.0) await fetchBcvRateFromWeb();
+    console.log(`📥 [APP ANDROID] Petición recibida en /api/bcv`);
+    
+    if (cachedBcvRate === 0.0) {
+        console.log("⏳ [APP ANDROID] Tasa en caché vacía. Consultando BCV en tiempo real...");
+        await fetchBcvRateFromWeb();
+    }
+
+    console.log(`🟢 [APP ANDROID] Enviando tasa BCV a la App: ${cachedBcvRate}`);
     res.json({ code: "000000", tasa: cachedBcvRate });
 });
 
-// Endpoint 1: Estadísticas Binance P2P (CORREGIDO PARA USAR CSRF y POST)
+// Endpoint 1: Estadísticas Binance P2P (AHORA NAVEGA ANTES DEL FETCH)
 app.get('/api/merchant/:userNo', async (req, res) => {
     await ensureBrowser();
     const userNo = req.params.userNo;
@@ -126,28 +159,19 @@ app.get('/api/merchant/:userNo', async (req, res) => {
         await page.setBypassCSP(true);
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
         
-        // Navegamos al perfil para obtener la cookie
+        // 1. Evitamos el error de CORS navegando al dominio de Binance primero
         await page.goto(`https://p2p.binance.com/es-LA/advertiserDetail?advertiserNo=${userNo}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
         
+        // 2. Extraemos los datos una vez que el origen es el correcto
         const data = await page.evaluate(async (uid) => {
-            const match = document.cookie.match(new RegExp('(^| )csrftoken=([^;]+)'));
-            const csrf = match ? match[2] : '';
-            const url = "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/user/profile-and-ads-list";
-            
             try {
-                const response = await fetch(url, {
-                    method: 'POST',
-                    headers: {
-                        'content-type': 'application/json',
-                        'clienttype': 'web',
-                        'lang': 'es-LA',
-                        'csrftoken': csrf
-                    },
-                    body: JSON.stringify({ userNo: uid })
+                const response = await fetch(`https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/user/profile-and-ads-list?userNo=${uid}`, {
+                    method: 'GET',
+                    headers: { 'clienttype': 'web', 'lang': 'es-LA' }
                 });
                 return await response.json();
             } catch (e) {
-                return { error: e.toString() };
+                return { error: e.message };
             }
         }, userNo);
         
@@ -170,9 +194,8 @@ app.post('/api/comments', async (req, res) => {
     let tempPage;
     try {
         tempPage = await browser.newPage();
-        await tempPage.setBypassCSP(true); 
+        await tempPage.setBypassCSP(true);
         await tempPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
-        
         await tempPage.goto(`https://p2p.binance.com/es-LA/advertiserDetail?advertiserNo=${userNo}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
         
         const reviewsData = await tempPage.evaluate(async (uid, pageNum) => {
