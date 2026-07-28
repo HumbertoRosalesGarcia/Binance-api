@@ -72,15 +72,18 @@ async function fetchBcvRateFromWeb() {
 
         await bcvPage.goto('https://www.bcv.org.ve/', { waitUntil: 'domcontentloaded', timeout: 35000 });
         
-        // MODIFICACIÓN: Buscamos el elemento div con id "dolar"
-        console.log("📄 [BCV SCRAPER] Página cargada. Esperando a que el servidor del BCV imprima la etiqueta #dolar...");
-        await bcvPage.waitForSelector('#dolar', { timeout: 15000 }).catch(() => console.log("⚠️ [BCV SCRAPER] El selector tardó mucho, intentando extraer de todos modos."));
+        // MODIFICACIÓN BASADA EN TUS CAPTURAS: 
+        // Esperamos a que el selector ultra específico cargue en el DOM
+        const exactSelector = '#dolar .field-content .row.recuadrotsmc .centrado.textp strong.strong-tb';
+        
+        console.log("📄 [BCV SCRAPER] Página cargada. Esperando a que el servidor del BCV imprima la tasa...");
+        await bcvPage.waitForSelector(exactSelector, { timeout: 15000 }).catch(() => console.log("⚠️ [BCV SCRAPER] El selector tardó mucho, intentando extraer de todos modos."));
 
-        const rawText = await bcvPage.evaluate(() => {
-            // MODIFICACIÓN: Extraemos el texto del selector .centrado fuerte que se encuentra dentro del div con id dolar
-            const el = document.querySelector('#dolar .centrado strong');
+        const rawText = await bcvPage.evaluate((sel) => {
+            // Extraemos el texto usando la ruta jerárquica exacta de tus imágenes
+            const el = document.querySelector(sel);
             return el ? el.innerText : null;
-        });
+        }, exactSelector);
 
         await bcvPage.close();
 
@@ -88,6 +91,7 @@ async function fetchBcvRateFromWeb() {
             console.log(`🔍 [BCV SCRAPER] Texto hallado en DOM: "${rawText.trim()}"`);
             
             // Limpieza estricta para quitar espacios, letras o saltos de línea basura
+            // Convierte "742,81050000" a "742.81050000" para que JavaScript lo entienda como decimal
             let cleanText = rawText.replace(/[^0-9,.]/g, ''); 
             cleanText = cleanText.replace(/\./g, '').replace(',', '.');
             
