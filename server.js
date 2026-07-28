@@ -1,7 +1,7 @@
 const express = require('express');
-const vanillaPuppeteer = require('puppeteer'); // 1. Importamos el Puppeteer normal
+const vanillaPuppeteer = require('puppeteer');
 const { addExtra } = require('puppeteer-extra');
-const puppeteer = addExtra(vanillaPuppeteer);  // 2. Forzamos la inyección para evitar el error ESM
+const puppeteer = addExtra(vanillaPuppeteer);
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const cors = require('cors');
 const cron = require('node-cron'); 
@@ -18,7 +18,6 @@ let browser;
 let cachedBcvRate = 0.0;
 let isFetchingBcv = false;
 
-// Inicialización de Puppeteer con banderas para omitir errores de SSL
 async function initBrowser() {
     if (browser) {
         try { await browser.close(); } catch (e) {}
@@ -49,7 +48,6 @@ async function ensureBrowser() {
     }
 }
 
-// --- FUNCIÓN DE SCRAPING BCV ---
 async function fetchBcvRateFromWeb() {
     if (isFetchingBcv) return cachedBcvRate;
     isFetchingBcv = true;
@@ -117,7 +115,7 @@ app.get('/api/bcv', async (req, res) => {
     res.json({ code: "000000", tasa: cachedBcvRate });
 });
 
-// Endpoint 1: Estadísticas Binance P2P (CORREGIDO)
+// Endpoint 1: Estadísticas Binance P2P (CORREGIDO PARA USAR CSRF y POST)
 app.get('/api/merchant/:userNo', async (req, res) => {
     await ensureBrowser();
     const userNo = req.params.userNo;
@@ -125,16 +123,32 @@ app.get('/api/merchant/:userNo', async (req, res) => {
     let page;
     try {
         page = await browser.newPage();
-        await page.setBypassCSP(true); // Bypass de seguridad
-        // Navegamos al origen para evitar bloqueos CORS
-        await page.goto('https://p2p.binance.com/es-LA', { waitUntil: 'domcontentloaded', timeout: 30000 });
+        await page.setBypassCSP(true);
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
+        
+        // Navegamos al perfil para obtener la cookie
+        await page.goto(`https://p2p.binance.com/es-LA/advertiserDetail?advertiserNo=${userNo}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
         
         const data = await page.evaluate(async (uid) => {
-            const response = await fetch(`https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/user/profile-and-ads-list?userNo=${uid}`, {
-                method: 'GET',
-                headers: { 'clienttype': 'web', 'lang': 'es-LA' }
-            });
-            return response.json();
+            const match = document.cookie.match(new RegExp('(^| )csrftoken=([^;]+)'));
+            const csrf = match ? match[2] : '';
+            const url = "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/user/profile-and-ads-list";
+            
+            try {
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: {
+                        'content-type': 'application/json',
+                        'clienttype': 'web',
+                        'lang': 'es-LA',
+                        'csrftoken': csrf
+                    },
+                    body: JSON.stringify({ userNo: uid })
+                });
+                return await response.json();
+            } catch (e) {
+                return { error: e.toString() };
+            }
         }, userNo);
         
         await page.close();
@@ -147,7 +161,7 @@ app.get('/api/merchant/:userNo', async (req, res) => {
     }
 });
 
-// Endpoint 2: Comentarios Binance P2P (CORREGIDO)
+// Endpoint 2: Comentarios Binance P2P
 app.post('/api/comments', async (req, res) => {
     await ensureBrowser();
     const { userNo, page = 1 } = req.body;
@@ -156,7 +170,7 @@ app.post('/api/comments', async (req, res) => {
     let tempPage;
     try {
         tempPage = await browser.newPage();
-        await tempPage.setBypassCSP(true); // Bypass de seguridad
+        await tempPage.setBypassCSP(true); 
         await tempPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
         
         await tempPage.goto(`https://p2p.binance.com/es-LA/advertiserDetail?advertiserNo=${userNo}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
