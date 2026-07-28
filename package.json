@@ -14,7 +14,7 @@
     "cors": "2.8.6",
     "express": "5.2.1",
     "node-cron": "3.0.3",
-    "puppeteer": "19.11.0",
+    "puppeteer": "18.2.1",
     "puppeteer-extra": "3.3.6",
     "puppeteer-extra-plugin-stealth": "2.11.2"
   }
