@@ -1,5 +1,7 @@
 const express = require('express');
-const puppeteer = require('puppeteer-extra');
+const vanillaPuppeteer = require('puppeteer'); // 1. Importamos el Puppeteer normal
+const { addExtra } = require('puppeteer-extra');
+const puppeteer = addExtra(vanillaPuppeteer);  // 2. Forzamos la inyección para evitar el error ESM
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const cors = require('cors');
 const cron = require('node-cron'); 
@@ -25,6 +27,7 @@ async function initBrowser() {
     browser = await puppeteer.launch({ 
         headless: true, 
         ignoreHTTPSErrors: true,
+        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium', // <-- Ruta forzada para Railway
         args: [
             '--no-sandbox', 
             '--disable-setuid-sandbox',
@@ -72,7 +75,6 @@ async function fetchBcvRateFromWeb() {
 
         await bcvPage.goto('https://www.bcv.org.ve/', { waitUntil: 'domcontentloaded', timeout: 35000 });
         
-        // MODIFICACIÓN BASADA EN TUS CAPTURAS: 
         // Esperamos a que el selector ultra específico cargue en el DOM
         const exactSelector = '#dolar .field-content .row.recuadrotsmc .centrado.textp strong.strong-tb';
         
