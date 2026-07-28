@@ -250,5 +250,3 @@ app.listen(PORT, '0.0.0.0', async () => {
     await initBrowser();
     startBcvAutoRefresh();
 });
-
-// Forzando a Railway a despertar
