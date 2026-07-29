@@ -18,7 +18,6 @@ let browser;
 let cachedBcvRate = 0.0;
 let isFetchingBcv = false;
 
-// Inicialización de Puppeteer
 async function initBrowser() {
     if (browser) {
         try { await browser.close(); } catch (e) {}
@@ -48,14 +47,11 @@ async function ensureBrowser() {
     }
 }
 
-// --- FUNCIÓN DE SCRAPING BCV (INTACTA) ---
+// --- FUNCIÓN BCV (INTACTA) ---
 async function fetchBcvRateFromWeb() {
     if (isFetchingBcv) return cachedBcvRate;
     isFetchingBcv = true;
-
     await ensureBrowser();
-    console.log("\n========================================");
-    console.log("🌐 [BCV SCRAPER] Conectando a https://www.bcv.org.ve/ ...");
     
     let bcvPage;
     try {
@@ -64,17 +60,12 @@ async function fetchBcvRateFromWeb() {
         
         await bcvPage.setRequestInterception(true);
         bcvPage.on('request', (req) => {
-            if (['image', 'font', 'media', 'stylesheet'].includes(req.resourceType())) {
-                req.abort();
-            } else {
-                req.continue();
-            }
+            if (['image', 'font', 'media', 'stylesheet'].includes(req.resourceType())) req.abort();
+            else req.continue();
         });
 
         await bcvPage.goto('https://www.bcv.org.ve/', { waitUntil: 'domcontentloaded', timeout: 35000 });
-        
         const exactSelector = '#dolar .field-content .row.recuadrotsmc .centrado.textp strong.strong-tb';
-        
         await bcvPage.waitForSelector(exactSelector, { timeout: 15000 }).catch(() => {});
 
         const rawText = await bcvPage.evaluate((sel) => {
@@ -87,7 +78,6 @@ async function fetchBcvRateFromWeb() {
         if (rawText) {
             let cleanText = rawText.replace(/[^0-9,.]/g, '').replace(/\./g, '').replace(',', '.');
             const parsedRate = parseFloat(cleanText);
-
             if (!isNaN(parsedRate) && parsedRate > 0) {
                 cachedBcvRate = parsedRate;
                 console.log(`🟢 [BCV SCRAPER] Tasa BCV Oficial actualizada: ${cachedBcvRate}`);
@@ -95,10 +85,7 @@ async function fetchBcvRateFromWeb() {
         }
     } catch (error) {
         if (bcvPage && !bcvPage.isClosed()) await bcvPage.close();
-        console.log(`❌ [BCV SCRAPER] Error en la conexión/scraping: ${error.message}`);
     }
-
-    console.log("========================================\n");
     isFetchingBcv = false;
     return cachedBcvRate;
 }
@@ -114,78 +101,87 @@ app.get('/api/bcv', async (req, res) => {
     res.json({ code: "000000", tasa: cachedBcvRate });
 });
 
-// Endpoint 1: Estadísticas Binance P2P (MÉTODO 100% LIBRE DE FETCH - EXTRACCIÓN DOM)
+// --- ENDPOINT 1: ESTADÍSTICAS (ESCÁNER PROFUNDO V3) ---
 app.get('/api/merchant/:userNo', async (req, res) => {
     await ensureBrowser();
     const userNo = req.params.userNo;
-    console.log(`\n📥 [APP ANDROID] Pidiendo estadísticas para: ${userNo}`);
+    console.log(`\n🚀 [NUEVO] Ejecutando Escáner Profundo para: ${userNo}`);
     
     let page;
     try {
         page = await browser.newPage();
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36');
         
-        // Bloqueamos imágenes y recursos para que la web cargue instantáneamente
         await page.setRequestInterception(true);
         page.on('request', (req) => {
-            if (['image', 'font', 'media', 'stylesheet'].includes(req.resourceType())) {
-                req.abort();
-            } else {
-                req.continue();
-            }
+            if (['image', 'font', 'media', 'stylesheet'].includes(req.resourceType())) req.abort();
+            else req.continue();
         });
 
-        console.log("⚙️ [SISTEMA] Abriendo perfil web oficial para extraer datos del código fuente...");
-        
-        // Navegamos al perfil
         await page.goto(`https://c2c.binance.com/es-LA/advertiserDetail?advertiserNo=${userNo}`, { 
             waitUntil: 'domcontentloaded', 
             timeout: 30000 
         });
         
-        // Extraemos los datos leyendo la memoria interna de la página, SIN USAR FETCH
         const statsData = await page.evaluate((uid) => {
             try {
                 const appDataNode = document.getElementById('__APP_DATA');
-                if (!appDataNode) return { error: "No se encontró el bloque de datos de Binance." };
+                if (!appDataNode) return { error: "No se encontró el bloque DOM de Binance." };
                 
                 const data = JSON.parse(appDataNode.textContent);
                 let foundData = null;
                 
-                // Función recursiva segura para buscar el perfil exacto en el código fuente
-                const searchObj = (obj) => {
-                    if (foundData) return;
-                    // Asegurarse de que el objeto existe y no es nulo antes de iterarlo
-                    if (obj !== null && typeof obj === 'object') {
-                        // Verificamos si tiene el número de usuario y cuenta de órdenes
-                        if (obj.userNo === uid && obj.monthOrderCount !== undefined) {
-                            foundData = obj;
-                            return;
+                // Algoritmo de búsqueda agresiva por todo el árbol JSON
+                const stack = [data];
+                while(stack.length > 0) {
+                    const current = stack.pop();
+                    
+                    if (current && typeof current === 'object' && !Array.isArray(current)) {
+                        // Criterio 1: Encontramos el perfil principal que tiene las stats adentro
+                        if (current.userNo === uid && current.userStats) {
+                            foundData = current; 
+                            break;
                         }
-                        Object.values(obj).forEach(searchObj);
+                        
+                        // Criterio 2: Encontramos el objeto de estadísticas directamente
+                        if (current.monthOrderCount !== undefined && current.avgReleaseTimeOfAll !== undefined) {
+                            foundData = current; 
+                        }
+
+                        // Explorar todos los sub-niveles
+                        for (let key in current) {
+                            if (current[key] && typeof current[key] === 'object') {
+                                stack.push(current[key]);
+                            } else if (typeof current[key] === 'string' && current[key].includes('monthOrderCount')) {
+                                // Por si Binance lo codificó como texto
+                                try { stack.push(JSON.parse(current[key])); } catch(e){}
+                            }
+                        }
                     }
-                };
-                
-                searchObj(data);
+                }
                 
                 if (foundData) {
+                    // Si el escáner capturó solo las estadísticas, lo empaquetamos como la API original
+                    if (foundData.monthOrderCount !== undefined && !foundData.userStats) {
+                        foundData = { userNo: uid, userStats: foundData };
+                    }
                     return { code: "000000", data: foundData, success: true };
                 } else {
-                    return { error: "No se encontraron las estadísticas del usuario." };
+                    return { error: "No se encontraron las variables matemáticas del comerciante." };
                 }
             } catch(e) {
-                return { error: "Fallo procesando el DOM: " + e.message };
+                return { error: "Fallo leyendo memoria: " + e.message };
             }
         }, userNo);
 
         await page.close();
         
         if (statsData && statsData.code === "000000") {
-            console.log(`🟢 [APP ANDROID] ¡Estadísticas capturadas desde el código fuente con éxito!`);
+            console.log(`🟢 [APP ANDROID] ¡Datos extraídos con éxito!`);
             res.json(statsData);
         } else {
-            console.log(`⚠️ [APP ANDROID] Fallo al capturar datos:`, statsData);
-            res.status(500).json({ error: "No se pudo leer la información del comerciante." });
+            console.log(`⚠️ [APP ANDROID] Fallo de escáner:`, statsData);
+            res.status(500).json({ error: "No se pudo extraer la información." });
         }
 
     } catch (error) {
@@ -195,11 +191,10 @@ app.get('/api/merchant/:userNo', async (req, res) => {
     }
 });
 
-// Endpoint 2: Comentarios Binance P2P (INTACTO, FUNCIONA PERFECTO)
+// --- ENDPOINT 2: COMENTARIOS (INTACTO) ---
 app.post('/api/comments', async (req, res) => {
     await ensureBrowser();
     const { userNo, page = 1 } = req.body;
-    console.log(`📥 [APP ANDROID] Pidiendo comentarios para: ${userNo} | Pág: ${page}`);
     
     let tempPage;
     try {
@@ -256,7 +251,6 @@ app.post('/api/comments', async (req, res) => {
         res.json({ code: "000000", data: { data: combinedReviews, totalPositivos: totalPos, totalNegativos: totalNeg } });
     } catch (error) {
         if (tempPage && !tempPage.isClosed()) await tempPage.close();
-        console.log(`❌ Error Binance Comments:`, error.message);
         res.status(500).json({ error: "Error interno" });
     }
 });
