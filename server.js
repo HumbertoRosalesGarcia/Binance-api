@@ -48,7 +48,7 @@ async function ensureBrowser() {
     }
 }
 
-// --- FUNCIÓN DE SCRAPING BCV EN VIVO ---
+// --- FUNCIÓN DE SCRAPING BCV ---
 async function fetchBcvRateFromWeb() {
     if (isFetchingBcv) return cachedBcvRate;
     isFetchingBcv = true;
@@ -85,8 +85,7 @@ async function fetchBcvRateFromWeb() {
         await bcvPage.close();
 
         if (rawText) {
-            let cleanText = rawText.replace(/[^0-9,.]/g, ''); 
-            cleanText = cleanText.replace(/\./g, '').replace(',', '.');
+            let cleanText = rawText.replace(/[^0-9,.]/g, '').replace(/\./g, '').replace(',', '.');
             const parsedRate = parseFloat(cleanText);
 
             if (!isNaN(parsedRate) && parsedRate > 0) {
@@ -111,14 +110,13 @@ function startBcvAutoRefresh() {
     cron.schedule('0 7 * * *', () => fetchBcvRateFromWeb(), { scheduled: true, timezone: "America/Caracas" });
 }
 
-// --- ENDPOINT BCV PARA LA APP ---
+// --- ENDPOINT BCV ---
 app.get('/api/bcv', async (req, res) => {
     if (cachedBcvRate === 0.0) await fetchBcvRateFromWeb();
-    console.log(`🟢 [APP ANDROID] Enviando tasa BCV a la App: ${cachedBcvRate}`);
     res.json({ code: "000000", tasa: cachedBcvRate });
 });
 
-// Endpoint 1: Estadísticas Binance P2P (MÉTODO DE INTERCEPCIÓN EN EL AIRE)
+// Endpoint 1: Estadísticas Binance P2P (NUEVO MÉTODO INVULNERABLE: IFRAME FETCH + SSR)
 app.get('/api/merchant/:userNo', async (req, res) => {
     await ensureBrowser();
     const userNo = req.params.userNo;
@@ -127,53 +125,89 @@ app.get('/api/merchant/:userNo', async (req, res) => {
     let page;
     try {
         page = await browser.newPage();
-        // Usamos exactamente el mismo User-Agent de tu cURL para no levantar sospechas
+        await page.setBypassCSP(true);
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36');
         
-        // Bloqueamos lo visual, pero dejamos pasar los scripts para que Binance genere los tokens anti-bot
-        await page.setRequestInterception(true);
-        page.on('request', (req) => {
-            if (['image', 'font', 'media', 'stylesheet'].includes(req.resourceType())) {
-                req.abort();
-            } else {
-                req.continue();
+        console.log("⚙️ [SISTEMA] Abriendo perfil web oficial para extraer datos...");
+        await page.goto(`https://c2c.binance.com/es-LA/advertiserDetail?advertiserNo=${userNo}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        
+        const statsData = await page.evaluate(async (uid) => {
+            const match = document.cookie.match(new RegExp('(^| )csrftoken=([^;]+)'));
+            const csrf = match ? match[2] : '';
+            const url = `https://c2c.binance.com/bapi/c2c/v2/friendly/c2c/user/profile-and-ads-list?userNo=${uid}`;
+            
+            // INTENTO 1: Fetch Nativo mediante Iframe (Esquiva el JavaScript alterado de Binance)
+            try {
+                const iframe = document.createElement('iframe');
+                iframe.style.display = 'none';
+                document.body.appendChild(iframe);
+                
+                const cleanFetch = iframe.contentWindow.fetch;
+                const response = await cleanFetch(url, { 
+                    method: 'GET', 
+                    headers: { 
+                        "content-type": "application/json", 
+                        "clienttype": "web", 
+                        "lang": "es-LA", 
+                        "csrftoken": csrf 
+                    } 
+                });
+                
+                const json = await response.json();
+                document.body.removeChild(iframe);
+                
+                if (json && json.code === "000000") return json;
+            } catch (e) {
+                console.log("Iframe fetch falló, pasando a Plan B...");
             }
-        });
 
-        console.log("⚙️ [SISTEMA] Abriendo perfil web oficial...");
+            // INTENTO 2 (PLAN B): Extraer datos del estado interno de la página (SSR)
+            try {
+                const appDataNode = document.getElementById('__APP_DATA');
+                if (appDataNode) {
+                    const parsed = JSON.parse(appDataNode.textContent);
+                    let foundData = null;
+                    
+                    // Escáner recursivo: Buscamos dentro de todo el código de la página el perfil exacto
+                    const searchObj = (obj) => {
+                        if (!obj || typeof obj !== 'object') return;
+                        // Si el objeto tiene el número de usuario y la cuenta de órdenes, ¡es el correcto!
+                        if (obj.userNo === uid && obj.monthOrderCount !== undefined) {
+                            foundData = obj;
+                            return;
+                        }
+                        Object.values(obj).forEach(searchObj);
+                    };
+                    
+                    searchObj(parsed);
+                    
+                    if (foundData) {
+                        return { code: "000000", data: foundData, success: true };
+                    }
+                }
+            } catch(e) {}
+            
+            return { error: "No se pudieron obtener las estadísticas." };
+        }, userNo);
 
-        // 1. Armamos la trampa: Le decimos a Puppeteer que se quede vigilando la red
-        // a la espera de la respuesta oficial del servidor de Binance
-        const apiResponsePromise = page.waitForResponse(
-            (response) => response.url().includes('profile-and-ads-list') && response.status() === 200,
-            { timeout: 25000 }
-        );
-
-        // 2. Cargamos la web. El código Javascript interno de Binance calculará el fvideo-token, 
-        // pasará las validaciones y hará la petición de forma automática por nosotros.
-        await page.goto(`https://c2c.binance.com/es-LA/advertiserDetail?advertiserNo=${userNo}`, { 
-            waitUntil: 'domcontentloaded', 
-            timeout: 30000 
-        });
-        
-        console.log("⏳ [SISTEMA] Esperando a que el frontend de Binance pida los datos...");
-
-        // 3. Capturamos el JSON en el momento exacto en que pasa por la red
-        const apiResponse = await apiResponsePromise;
-        const data = await apiResponse.json();
-        
         await page.close();
-        console.log(`🟢 [APP ANDROID] ¡Estadísticas interceptadas con éxito!`);
-        res.json(data);
+        
+        if (statsData && statsData.code === "000000") {
+            console.log(`🟢 [APP ANDROID] ¡Estadísticas capturadas y enviadas con éxito!`);
+            res.json(statsData);
+        } else {
+            console.log(`⚠️ [APP ANDROID] Fallo al capturar datos:`, statsData);
+            res.status(500).json({ error: "Error interno al leer datos" });
+        }
 
     } catch (error) {
         if (page && !page.isClosed()) await page.close();
         console.log(`❌ Error Binance Merchant:`, error.message);
-        res.status(500).json({ error: "Error interno, intercepción fallida." });
+        res.status(500).json({ error: "Error interno" });
     }
 });
 
-// Endpoint 2: Comentarios Binance P2P (Funciona correctamente, sin cambios)
+// Endpoint 2: Comentarios Binance P2P (¡INTACTO, FUNCIONA PERFECTO!)
 app.post('/api/comments', async (req, res) => {
     await ensureBrowser();
     const { userNo, page = 1 } = req.body;
