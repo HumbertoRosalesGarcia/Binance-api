@@ -101,11 +101,11 @@ app.get('/api/bcv', async (req, res) => {
     res.json({ code: "000000", tasa: cachedBcvRate });
 });
 
-// --- ENDPOINT 1: ESTADÍSTICAS (ESCÁNER PROFUNDO V3) ---
+// --- ENDPOINT 1: ESTADÍSTICAS (ESTRUCTURA JSON CORREGIDA PARA ANDROID) ---
 app.get('/api/merchant/:userNo', async (req, res) => {
     await ensureBrowser();
     const userNo = req.params.userNo;
-    console.log(`\n🚀 [NUEVO] Ejecutando Escáner Profundo para: ${userNo}`);
+    console.log(`\n🚀 [NUEVO] Ejecutando Extracción con Estructura Oficial para: ${userNo}`);
     
     let page;
     try {
@@ -129,43 +129,39 @@ app.get('/api/merchant/:userNo', async (req, res) => {
                 if (!appDataNode) return { error: "No se encontró el bloque DOM de Binance." };
                 
                 const data = JSON.parse(appDataNode.textContent);
-                let foundData = null;
+                let targetVo = null;
                 
-                // Algoritmo de búsqueda agresiva por todo el árbol JSON
-                const stack = [data];
-                while(stack.length > 0) {
-                    const current = stack.pop();
-                    
-                    if (current && typeof current === 'object' && !Array.isArray(current)) {
-                        // Criterio 1: Encontramos el perfil principal que tiene las stats adentro
-                        if (current.userNo === uid && current.userStats) {
-                            foundData = current; 
-                            break;
-                        }
-                        
-                        // Criterio 2: Encontramos el objeto de estadísticas directamente
-                        if (current.monthOrderCount !== undefined && current.avgReleaseTimeOfAll !== undefined) {
-                            foundData = current; 
-                        }
+                // Buscamos el objeto exacto que contiene las estadísticas del usuario
+                const searchForVo = (obj) => {
+                    if (targetVo) return;
+                    if (!obj || typeof obj !== 'object') return;
 
-                        // Explorar todos los sub-niveles
-                        for (let key in current) {
-                            if (current[key] && typeof current[key] === 'object') {
-                                stack.push(current[key]);
-                            } else if (typeof current[key] === 'string' && current[key].includes('monthOrderCount')) {
-                                // Por si Binance lo codificó como texto
-                                try { stack.push(JSON.parse(current[key])); } catch(e){}
-                            }
-                        }
+                    // Si el objeto tiene el número de usuario y cuenta de órdenes, ¡es nuestro userDetailVo!
+                    if (obj.userNo === uid && obj.monthOrderCount !== undefined) {
+                        targetVo = obj;
+                        return;
                     }
-                }
+
+                    // Exploramos sub-niveles
+                    Object.values(obj).forEach(searchForVo);
+                };
                 
-                if (foundData) {
-                    // Si el escáner capturó solo las estadísticas, lo empaquetamos como la API original
-                    if (foundData.monthOrderCount !== undefined && !foundData.userStats) {
-                        foundData = { userNo: uid, userStats: foundData };
-                    }
-                    return { code: "000000", data: foundData, success: true };
+                searchForVo(data);
+                
+                if (targetVo) {
+                    // ¡AQUÍ ESTABA EL ERROR! Ahora envolvemos los datos EXACTAMENTE como los envía Binance
+                    // Para que tu App en Android (Kotlin) pueda leer 'data.userDetailVo'
+                    return { 
+                        code: "000000", 
+                        message: null,
+                        messageDetail: null,
+                        data: {
+                            userDetailVo: targetVo,
+                            buyList: [],
+                            sellList: []
+                        }, 
+                        success: true 
+                    };
                 } else {
                     return { error: "No se encontraron las variables matemáticas del comerciante." };
                 }
@@ -177,7 +173,7 @@ app.get('/api/merchant/:userNo', async (req, res) => {
         await page.close();
         
         if (statsData && statsData.code === "000000") {
-            console.log(`🟢 [APP ANDROID] ¡Datos extraídos con éxito!`);
+            console.log(`🟢 [APP ANDROID] ¡Datos extraídos y empaquetados con éxito!`);
             res.json(statsData);
         } else {
             console.log(`⚠️ [APP ANDROID] Fallo de escáner:`, statsData);
