@@ -48,7 +48,7 @@ async function ensureBrowser() {
     }
 }
 
-// --- FUNCIÓN DE SCRAPING BCV ---
+// --- FUNCIÓN DE SCRAPING BCV (INTACTA) ---
 async function fetchBcvRateFromWeb() {
     if (isFetchingBcv) return cachedBcvRate;
     isFetchingBcv = true;
@@ -103,20 +103,18 @@ async function fetchBcvRateFromWeb() {
     return cachedBcvRate;
 }
 
-// --- PROGRAMACIÓN DE ACTUALIZACIÓN ---
 function startBcvAutoRefresh() {
     fetchBcvRateFromWeb();
     cron.schedule('0 17 * * *', () => fetchBcvRateFromWeb(), { scheduled: true, timezone: "America/Caracas" });
     cron.schedule('0 7 * * *', () => fetchBcvRateFromWeb(), { scheduled: true, timezone: "America/Caracas" });
 }
 
-// --- ENDPOINT BCV ---
 app.get('/api/bcv', async (req, res) => {
     if (cachedBcvRate === 0.0) await fetchBcvRateFromWeb();
     res.json({ code: "000000", tasa: cachedBcvRate });
 });
 
-// Endpoint 1: Estadísticas Binance P2P (NUEVO MÉTODO INVULNERABLE: IFRAME FETCH + SSR)
+// Endpoint 1: Estadísticas Binance P2P (MÉTODO 100% LIBRE DE FETCH - EXTRACCIÓN DOM)
 app.get('/api/merchant/:userNo', async (req, res) => {
     await ensureBrowser();
     const userNo = req.params.userNo;
@@ -125,79 +123,69 @@ app.get('/api/merchant/:userNo', async (req, res) => {
     let page;
     try {
         page = await browser.newPage();
-        await page.setBypassCSP(true);
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36');
         
-        console.log("⚙️ [SISTEMA] Abriendo perfil web oficial para extraer datos...");
-        await page.goto(`https://c2c.binance.com/es-LA/advertiserDetail?advertiserNo=${userNo}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
-        
-        const statsData = await page.evaluate(async (uid) => {
-            const match = document.cookie.match(new RegExp('(^| )csrftoken=([^;]+)'));
-            const csrf = match ? match[2] : '';
-            const url = `https://c2c.binance.com/bapi/c2c/v2/friendly/c2c/user/profile-and-ads-list?userNo=${uid}`;
-            
-            // INTENTO 1: Fetch Nativo mediante Iframe (Esquiva el JavaScript alterado de Binance)
-            try {
-                const iframe = document.createElement('iframe');
-                iframe.style.display = 'none';
-                document.body.appendChild(iframe);
-                
-                const cleanFetch = iframe.contentWindow.fetch;
-                const response = await cleanFetch(url, { 
-                    method: 'GET', 
-                    headers: { 
-                        "content-type": "application/json", 
-                        "clienttype": "web", 
-                        "lang": "es-LA", 
-                        "csrftoken": csrf 
-                    } 
-                });
-                
-                const json = await response.json();
-                document.body.removeChild(iframe);
-                
-                if (json && json.code === "000000") return json;
-            } catch (e) {
-                console.log("Iframe fetch falló, pasando a Plan B...");
+        // Bloqueamos imágenes y recursos para que la web cargue instantáneamente
+        await page.setRequestInterception(true);
+        page.on('request', (req) => {
+            if (['image', 'font', 'media', 'stylesheet'].includes(req.resourceType())) {
+                req.abort();
+            } else {
+                req.continue();
             }
+        });
 
-            // INTENTO 2 (PLAN B): Extraer datos del estado interno de la página (SSR)
+        console.log("⚙️ [SISTEMA] Abriendo perfil web oficial para extraer datos del código fuente...");
+        
+        // Navegamos al perfil
+        await page.goto(`https://c2c.binance.com/es-LA/advertiserDetail?advertiserNo=${userNo}`, { 
+            waitUntil: 'domcontentloaded', 
+            timeout: 30000 
+        });
+        
+        // Extraemos los datos leyendo la memoria interna de la página, SIN USAR FETCH
+        const statsData = await page.evaluate((uid) => {
             try {
                 const appDataNode = document.getElementById('__APP_DATA');
-                if (appDataNode) {
-                    const parsed = JSON.parse(appDataNode.textContent);
-                    let foundData = null;
-                    
-                    // Escáner recursivo: Buscamos dentro de todo el código de la página el perfil exacto
-                    const searchObj = (obj) => {
-                        if (!obj || typeof obj !== 'object') return;
-                        // Si el objeto tiene el número de usuario y la cuenta de órdenes, ¡es el correcto!
+                if (!appDataNode) return { error: "No se encontró el bloque de datos de Binance." };
+                
+                const data = JSON.parse(appDataNode.textContent);
+                let foundData = null;
+                
+                // Función recursiva segura para buscar el perfil exacto en el código fuente
+                const searchObj = (obj) => {
+                    if (foundData) return;
+                    // Asegurarse de que el objeto existe y no es nulo antes de iterarlo
+                    if (obj !== null && typeof obj === 'object') {
+                        // Verificamos si tiene el número de usuario y cuenta de órdenes
                         if (obj.userNo === uid && obj.monthOrderCount !== undefined) {
                             foundData = obj;
                             return;
                         }
                         Object.values(obj).forEach(searchObj);
-                    };
-                    
-                    searchObj(parsed);
-                    
-                    if (foundData) {
-                        return { code: "000000", data: foundData, success: true };
                     }
+                };
+                
+                searchObj(data);
+                
+                if (foundData) {
+                    return { code: "000000", data: foundData, success: true };
+                } else {
+                    return { error: "No se encontraron las estadísticas del usuario." };
                 }
-            } catch(e) {}
-            
-            return { error: "No se pudieron obtener las estadísticas." };
+            } catch(e) {
+                return { error: "Fallo procesando el DOM: " + e.message };
+            }
         }, userNo);
 
         await page.close();
         
         if (statsData && statsData.code === "000000") {
-            console.log(`🟢 [APP ANDROID] ¡Estadísticas capturadas y enviadas con éxito!`);
+            console.log(`🟢 [APP ANDROID] ¡Estadísticas capturadas desde el código fuente con éxito!`);
             res.json(statsData);
         } else {
             console.log(`⚠️ [APP ANDROID] Fallo al capturar datos:`, statsData);
-            res.status(500).json({ error: "Error interno al leer datos" });
+            res.status(500).json({ error: "No se pudo leer la información del comerciante." });
         }
 
     } catch (error) {
@@ -207,7 +195,7 @@ app.get('/api/merchant/:userNo', async (req, res) => {
     }
 });
 
-// Endpoint 2: Comentarios Binance P2P (¡INTACTO, FUNCIONA PERFECTO!)
+// Endpoint 2: Comentarios Binance P2P (INTACTO, FUNCIONA PERFECTO)
 app.post('/api/comments', async (req, res) => {
     await ensureBrowser();
     const { userNo, page = 1 } = req.body;
