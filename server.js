@@ -22,11 +22,10 @@ async function initBrowser() {
     if (browser) {
         try { await browser.close(); } catch (e) {}
     }
-    console.log("⏳ [SISTEMA] Iniciando motor Puppeteer...");
+    console.log("⏳ [SISTEMA] Iniciando motor Puppeteer en Local...");
     browser = await puppeteer.launch({ 
         headless: true, 
         ignoreHTTPSErrors: true,
-        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium', 
         args: [
             '--no-sandbox', 
             '--disable-setuid-sandbox',
@@ -37,7 +36,7 @@ async function initBrowser() {
             '--ignore-certificate-errors'
         ]
     }); 
-    console.log("✅ [SISTEMA] Puppeteer listo para operar.");
+    console.log("✅ [SISTEMA] Puppeteer listo para operar en tu PC.");
 }
 
 async function ensureBrowser() {
@@ -47,7 +46,7 @@ async function ensureBrowser() {
     }
 }
 
-// --- FUNCIÓN BCV (INTACTA) ---
+// --- FUNCIÓN BCV ---
 async function fetchBcvRateFromWeb() {
     if (isFetchingBcv) return cachedBcvRate;
     isFetchingBcv = true;
@@ -101,70 +100,47 @@ app.get('/api/bcv', async (req, res) => {
     res.json({ code: "000000", tasa: cachedBcvRate });
 });
 
-// --- ENDPOINT 1: ESTADÍSTICAS (ESTRUCTURA JSON CORREGIDA PARA ANDROID) ---
+// --- ENDPOINT 1: ESTADÍSTICAS (NUEVA EXTRACCIÓN VÍA API INTERNA) ---
 app.get('/api/merchant/:userNo', async (req, res) => {
     await ensureBrowser();
     const userNo = req.params.userNo;
-    console.log(`\n🚀 [NUEVO] Ejecutando Extracción con Estructura Oficial para: ${userNo}`);
+    console.log(`\n🚀 [NUEVO] Clonando petición API de Binance para: ${userNo}`);
     
     let page;
     try {
         page = await browser.newPage();
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36');
         
+        // Bloqueamos imágenes y estilos para que cargue súper rápido
         await page.setRequestInterception(true);
         page.on('request', (req) => {
             if (['image', 'font', 'media', 'stylesheet'].includes(req.resourceType())) req.abort();
             else req.continue();
         });
 
+        // Entramos a la página para que Binance nos asigne cookies de sesión válidas
         await page.goto(`https://c2c.binance.com/es-LA/advertiserDetail?advertiserNo=${userNo}`, { 
             waitUntil: 'domcontentloaded', 
             timeout: 30000 
         });
         
-        const statsData = await page.evaluate((uid) => {
+        // Ejecutamos el Fetch exactamente como lo viste en tu F12
+        const statsData = await page.evaluate(async (uid) => {
             try {
-                const appDataNode = document.getElementById('__APP_DATA');
-                if (!appDataNode) return { error: "No se encontró el bloque DOM de Binance." };
+                const url = `https://c2c.binance.com/bapi/c2c/v2/friendly/c2c/user/profile-and-ads-list?userNo=${uid}`;
                 
-                const data = JSON.parse(appDataNode.textContent);
-                let targetVo = null;
+                const response = await fetch(url, { 
+                    method: 'GET', 
+                    headers: { 
+                        "content-type": "application/json", 
+                        "clienttype": "web", 
+                        "lang": "es-LA" 
+                    } 
+                });
                 
-                // Buscamos el objeto exacto que contiene las estadísticas del usuario
-                const searchForVo = (obj) => {
-                    if (targetVo) return;
-                    if (!obj || typeof obj !== 'object') return;
-
-                    // Si el objeto tiene el número de usuario y cuenta de órdenes, ¡es nuestro userDetailVo!
-                    if (obj.userNo === uid && obj.monthOrderCount !== undefined) {
-                        targetVo = obj;
-                        return;
-                    }
-
-                    // Exploramos sub-niveles
-                    Object.values(obj).forEach(searchForVo);
-                };
+                const json = await response.json();
+                return json; 
                 
-                searchForVo(data);
-                
-                if (targetVo) {
-                    // ¡AQUÍ ESTABA EL ERROR! Ahora envolvemos los datos EXACTAMENTE como los envía Binance
-                    // Para que tu App en Android (Kotlin) pueda leer 'data.userDetailVo'
-                    return { 
-                        code: "000000", 
-                        message: null,
-                        messageDetail: null,
-                        data: {
-                            userDetailVo: targetVo,
-                            buyList: [],
-                            sellList: []
-                        }, 
-                        success: true 
-                    };
-                } else {
-                    return { error: "No se encontraron las variables matemáticas del comerciante." };
-                }
             } catch(e) {
                 return { error: "Fallo leyendo memoria: " + e.message };
             }
@@ -172,11 +148,12 @@ app.get('/api/merchant/:userNo', async (req, res) => {
 
         await page.close();
         
+        // Verificamos si Binance nos entregó el JSON oficial
         if (statsData && statsData.code === "000000") {
-            console.log(`🟢 [APP ANDROID] ¡Datos extraídos y empaquetados con éxito!`);
+            console.log(`🟢 [APP ANDROID] ¡Datos extraídos directamente de la API de Binance con éxito!`);
             res.json(statsData);
         } else {
-            console.log(`⚠️ [APP ANDROID] Fallo de escáner:`, statsData);
+            console.log(`⚠️ [APP ANDROID] Fallo en la API interna de Binance:`, statsData);
             res.status(500).json({ error: "No se pudo extraer la información." });
         }
 
@@ -187,7 +164,7 @@ app.get('/api/merchant/:userNo', async (req, res) => {
     }
 });
 
-// --- ENDPOINT 2: COMENTARIOS (INTACTO) ---
+// --- ENDPOINT 2: COMENTARIOS ---
 app.post('/api/comments', async (req, res) => {
     await ensureBrowser();
     const { userNo, page = 1 } = req.body;
@@ -253,7 +230,7 @@ app.post('/api/comments', async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', async () => {
-    console.log(`🚀 Servidor corriendo en el puerto ${PORT}`);
+    console.log(`🚀 Servidor corriendo en el puerto ${PORT} en la red local`);
     await initBrowser();
     startBcvAutoRefresh();
 });
