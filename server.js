@@ -22,21 +22,21 @@ async function initBrowser() {
     if (browser) {
         try { await browser.close(); } catch (e) {}
     }
-    console.log("⏳ [SISTEMA] Iniciando motor Puppeteer en Local...");
-    browser = await puppeteer.launch({ 
-        headless: true, 
+    console.log("⏳ [SISTEMA] Iniciando motor Puppeteer en la Nube (Render)...");
+    browser = await puppeteer.launch({
+        headless: true,
         ignoreHTTPSErrors: true,
         args: [
-            '--no-sandbox', 
+            '--no-sandbox',
             '--disable-setuid-sandbox',
             '--disable-dev-shm-usage',
-            '--disable-gpu',           
+            '--disable-gpu',
             '--no-zygote',
             '--single-process',
             '--ignore-certificate-errors'
         ]
-    }); 
-    console.log("✅ [SISTEMA] Puppeteer listo para operar en tu PC.");
+    });
+    console.log("✅ [SISTEMA] Puppeteer listo para operar en la nube.");
 }
 
 async function ensureBrowser() {
@@ -51,12 +51,12 @@ async function fetchBcvRateFromWeb() {
     if (isFetchingBcv) return cachedBcvRate;
     isFetchingBcv = true;
     await ensureBrowser();
-    
+
     let bcvPage;
     try {
         bcvPage = await browser.newPage();
         await bcvPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36');
-        
+
         await bcvPage.setRequestInterception(true);
         bcvPage.on('request', (req) => {
             if (['image', 'font', 'media', 'stylesheet'].includes(req.resourceType())) req.abort();
@@ -105,12 +105,12 @@ app.get('/api/merchant/:userNo', async (req, res) => {
     await ensureBrowser();
     const userNo = req.params.userNo;
     console.log(`\n🚀 [NUEVO] Clonando petición API de Binance para: ${userNo}`);
-    
+
     let page;
     try {
         page = await browser.newPage();
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36');
-        
+
         // Bloqueamos imágenes y estilos para que cargue súper rápido
         await page.setRequestInterception(true);
         page.on('request', (req) => {
@@ -119,35 +119,35 @@ app.get('/api/merchant/:userNo', async (req, res) => {
         });
 
         // Entramos a la página para que Binance nos asigne cookies de sesión válidas
-        await page.goto(`https://c2c.binance.com/es-LA/advertiserDetail?advertiserNo=${userNo}`, { 
-            waitUntil: 'domcontentloaded', 
-            timeout: 30000 
+        await page.goto(`https://c2c.binance.com/es-LA/advertiserDetail?advertiserNo=${userNo}`, {
+            waitUntil: 'domcontentloaded',
+            timeout: 30000
         });
-        
+
         // Ejecutamos el Fetch exactamente como lo viste en tu F12
         const statsData = await page.evaluate(async (uid) => {
             try {
                 const url = `https://c2c.binance.com/bapi/c2c/v2/friendly/c2c/user/profile-and-ads-list?userNo=${uid}`;
-                
-                const response = await fetch(url, { 
-                    method: 'GET', 
-                    headers: { 
-                        "content-type": "application/json", 
-                        "clienttype": "web", 
-                        "lang": "es-LA" 
-                    } 
+
+                const response = await fetch(url, {
+                    method: 'GET',
+                    headers: {
+                        "content-type": "application/json",
+                        "clienttype": "web",
+                        "lang": "es-LA"
+                    }
                 });
-                
+
                 const json = await response.json();
-                return json; 
-                
+                return json;
+
             } catch(e) {
                 return { error: "Fallo leyendo memoria: " + e.message };
             }
         }, userNo);
 
         await page.close();
-        
+
         // Verificamos si Binance nos entregó el JSON oficial
         if (statsData && statsData.code === "000000") {
             console.log(`🟢 [APP ANDROID] ¡Datos extraídos directamente de la API de Binance con éxito!`);
@@ -168,15 +168,15 @@ app.get('/api/merchant/:userNo', async (req, res) => {
 app.post('/api/comments', async (req, res) => {
     await ensureBrowser();
     const { userNo, page = 1 } = req.body;
-    
+
     let tempPage;
     try {
         tempPage = await browser.newPage();
-        await tempPage.setBypassCSP(true); 
+        await tempPage.setBypassCSP(true);
         await tempPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36');
-        
+
         await tempPage.goto(`https://c2c.binance.com/es-LA/advertiserDetail?advertiserNo=${userNo}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
-        
+
         const reviewsData = await tempPage.evaluate(async (uid, pageNum) => {
             const match = document.cookie.match(new RegExp('(^| )csrftoken=([^;]+)'));
             const csrf = match ? match[2] : '';
@@ -219,7 +219,7 @@ app.post('/api/comments', async (req, res) => {
 
         if (posList.length > 0) combinedReviews = combinedReviews.concat(procesarComentarios(posList, "POSITIVE"));
         if (negList.length > 0) combinedReviews = combinedReviews.concat(procesarComentarios(negList, "NEGATIVE"));
-        
+
         console.log(`🟢 [APP ANDROID] Comentarios procesados y enviados.`);
         res.json({ code: "000000", data: { data: combinedReviews, totalPositivos: totalPos, totalNegativos: totalNeg } });
     } catch (error) {
@@ -230,7 +230,7 @@ app.post('/api/comments', async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', async () => {
-    console.log(`🚀 Servidor corriendo en el puerto ${PORT} en la red local`);
+    console.log(`🚀 Servidor corriendo en el puerto ${PORT} en la nube (Render)`);
     await initBrowser();
     startBcvAutoRefresh();
 });
