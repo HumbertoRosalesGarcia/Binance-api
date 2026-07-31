@@ -33,7 +33,8 @@ async function initBrowser() {
             '--disable-gpu',
             '--no-zygote',
             '--single-process',
-            '--ignore-certificate-errors'
+            '--ignore-certificate-errors',
+            '--window-size=1280,800'
         ]
     });
     console.log("✅ [SISTEMA] Puppeteer listo para operar en la nube.");
@@ -55,7 +56,7 @@ async function fetchBcvRateFromWeb() {
     let bcvPage;
     try {
         bcvPage = await browser.newPage();
-        await bcvPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36');
+        await bcvPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
         await bcvPage.setRequestInterception(true);
         bcvPage.on('request', (req) => {
@@ -63,9 +64,10 @@ async function fetchBcvRateFromWeb() {
             else req.continue();
         });
 
-        await bcvPage.goto('https://www.bcv.org.ve/', { waitUntil: 'domcontentloaded', timeout: 35000 });
+        // Aumentado a 60 segundos por la lentitud de los servidores gratuitos
+        await bcvPage.goto('https://www.bcv.org.ve/', { waitUntil: 'domcontentloaded', timeout: 60000 });
         const exactSelector = '#dolar .field-content .row.recuadrotsmc .centrado.textp strong.strong-tb';
-        await bcvPage.waitForSelector(exactSelector, { timeout: 15000 }).catch(() => {});
+        await bcvPage.waitForSelector(exactSelector, { timeout: 20000 }).catch(() => {});
 
         const rawText = await bcvPage.evaluate((sel) => {
             const el = document.querySelector(sel);
@@ -83,6 +85,7 @@ async function fetchBcvRateFromWeb() {
             }
         }
     } catch (error) {
+        console.log(`❌ [BCV SCRAPER] Error:`, error.message);
         if (bcvPage && !bcvPage.isClosed()) await bcvPage.close();
     }
     isFetchingBcv = false;
@@ -100,35 +103,35 @@ app.get('/api/bcv', async (req, res) => {
     res.json({ code: "000000", tasa: cachedBcvRate });
 });
 
-// --- ENDPOINT 1: ESTADÍSTICAS (NUEVA EXTRACCIÓN VÍA API INTERNA) ---
+// --- ENDPOINT 1: ESTADÍSTICAS ---
 app.get('/api/merchant/:userNo', async (req, res) => {
     await ensureBrowser();
     const userNo = req.params.userNo;
-    console.log(`\n🚀 [NUEVO] Clonando petición API de Binance para: ${userNo}`);
+    console.log(`\n🚀 [NUEVO] Petición API Stats recibida para: ${userNo}`);
 
     let page;
     try {
         page = await browser.newPage();
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36');
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
-        // Bloqueamos imágenes y estilos para que cargue súper rápido
         await page.setRequestInterception(true);
         page.on('request', (req) => {
             if (['image', 'font', 'media', 'stylesheet'].includes(req.resourceType())) req.abort();
             else req.continue();
         });
 
-        // Entramos a la página para que Binance nos asigne cookies de sesión válidas
+        console.log(`⏳ [STATS] Navegando a Binance...`);
+        // Aumentado a 60 segundos
         await page.goto(`https://c2c.binance.com/es-LA/advertiserDetail?advertiserNo=${userNo}`, {
             waitUntil: 'domcontentloaded',
-            timeout: 30000
+            timeout: 60000
         });
 
-        // Ejecutamos el Fetch exactamente como lo viste en tu F12
+        console.log(`✅ [STATS] Página cargada, extrayendo Fetch interno...`);
+
         const statsData = await page.evaluate(async (uid) => {
             try {
                 const url = `https://c2c.binance.com/bapi/c2c/v2/friendly/c2c/user/profile-and-ads-list?userNo=${uid}`;
-
                 const response = await fetch(url, {
                     method: 'GET',
                     headers: {
@@ -137,10 +140,8 @@ app.get('/api/merchant/:userNo', async (req, res) => {
                         "lang": "es-LA"
                     }
                 });
-
                 const json = await response.json();
                 return json;
-
             } catch(e) {
                 return { error: "Fallo leyendo memoria: " + e.message };
             }
@@ -148,19 +149,18 @@ app.get('/api/merchant/:userNo', async (req, res) => {
 
         await page.close();
 
-        // Verificamos si Binance nos entregó el JSON oficial
         if (statsData && statsData.code === "000000") {
-            console.log(`🟢 [APP ANDROID] ¡Datos extraídos directamente de la API de Binance con éxito!`);
+            console.log(`🟢 [STATS] Éxito. Entregando datos a la App.`);
             res.json(statsData);
         } else {
-            console.log(`⚠️ [APP ANDROID] Fallo en la API interna de Binance:`, statsData);
-            res.status(500).json({ error: "No se pudo extraer la información." });
+            console.log(`⚠️ [STATS] Fallo en la API interna de Binance. Respuesta:`, JSON.stringify(statsData).substring(0, 100));
+            res.status(500).json({ error: "Bloqueo o fallo de Binance", details: statsData });
         }
 
     } catch (error) {
         if (page && !page.isClosed()) await page.close();
-        console.log(`❌ Error Binance Merchant:`, error.message);
-        res.status(500).json({ error: "Error interno" });
+        console.log(`❌ [STATS] Error fatal:`, error.message);
+        res.status(500).json({ error: error.message });
     }
 });
 
@@ -168,14 +168,22 @@ app.get('/api/merchant/:userNo', async (req, res) => {
 app.post('/api/comments', async (req, res) => {
     await ensureBrowser();
     const { userNo, page = 1 } = req.body;
+    console.log(`\n🚀 [NUEVO] Petición Comentarios recibida. User: ${userNo} | Página: ${page}`);
 
     let tempPage;
     try {
         tempPage = await browser.newPage();
         await tempPage.setBypassCSP(true);
-        await tempPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36');
+        await tempPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
 
-        await tempPage.goto(`https://c2c.binance.com/es-LA/advertiserDetail?advertiserNo=${userNo}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        console.log(`⏳ [COMENTARIOS] Navegando a Binance...`);
+        // Aumentado a 60 segundos
+        await tempPage.goto(`https://c2c.binance.com/es-LA/advertiserDetail?advertiserNo=${userNo}`, {
+            waitUntil: 'domcontentloaded',
+            timeout: 60000
+        });
+
+        console.log(`✅ [COMENTARIOS] Página cargada, extrayendo token y fetch...`);
 
         const reviewsData = await tempPage.evaluate(async (uid, pageNum) => {
             const match = document.cookie.match(new RegExp('(^| )csrftoken=([^;]+)'));
@@ -188,11 +196,20 @@ app.post('/api/comments', async (req, res) => {
                 const jsonPos = await resPos.json();
                 const resNeg = await fetch(url, { method: 'POST', headers: headers, body: JSON.stringify({ page: pageNum, rows: 20, reviewRole: 1, quickCommentTagId: null, sort: "desc", userNo: uid, rating: 3 }) });
                 const jsonNeg = await resNeg.json();
-                return { pos: jsonPos, neg: jsonNeg };
+                return { pos: jsonPos, neg: jsonNeg, cookieFound: !!csrf };
             } catch (e) { return { error: e.toString() }; }
         }, userNo, page);
 
         await tempPage.close();
+
+        if (reviewsData.error) {
+            console.log(`⚠️ [COMENTARIOS] Error en el script del navegador:`, reviewsData.error);
+            return res.status(500).json({ error: "Fallo leyendo comentarios" });
+        }
+
+        if (!reviewsData.cookieFound) {
+            console.log(`⚠️ [COMENTARIOS] ADVERTENCIA: No se pudo extraer el CSRF Token. Es probable que Cloudflare esté bloqueando.`);
+        }
 
         let totalPos = 0, totalNeg = 0;
         if (reviewsData.pos && reviewsData.pos.countsPerRating) {
@@ -220,11 +237,12 @@ app.post('/api/comments', async (req, res) => {
         if (posList.length > 0) combinedReviews = combinedReviews.concat(procesarComentarios(posList, "POSITIVE"));
         if (negList.length > 0) combinedReviews = combinedReviews.concat(procesarComentarios(negList, "NEGATIVE"));
 
-        console.log(`🟢 [APP ANDROID] Comentarios procesados y enviados.`);
+        console.log(`🟢 [COMENTARIOS] Éxito. ${combinedReviews.length} comentarios enviados a la App.`);
         res.json({ code: "000000", data: { data: combinedReviews, totalPositivos: totalPos, totalNegativos: totalNeg } });
     } catch (error) {
         if (tempPage && !tempPage.isClosed()) await tempPage.close();
-        res.status(500).json({ error: "Error interno" });
+        console.log(`❌ [COMENTARIOS] Error fatal:`, error.message);
+        res.status(500).json({ error: error.message });
     }
 });
 
