@@ -22,22 +22,41 @@ async function initBrowser() {
     if (browser) {
         try { await browser.close(); } catch (e) {}
     }
-    console.log("⏳ [SISTEMA] Iniciando motor Puppeteer en la Nube (Render)...");
+    console.log("⏳ [SISTEMA] Iniciando motor Puppeteer (Modo Ultra Bajo Consumo)...");
+
+    // OPTIMIZACIÓN: Flags extremos para servidores de 1GB RAM
     browser = await puppeteer.launch({
         headless: true,
+        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null, // Se conecta al Chromium de tu Dockerfile
         ignoreHTTPSErrors: true,
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
+            '--disable-dev-shm-usage', // Vital para evitar crashes en Docker
             '--disable-gpu',
             '--no-zygote',
-            '--single-process',
-            '--ignore-certificate-errors',
-            '--window-size=1280,800'
+            '--single-process', // Ahorra muchísima RAM
+            '--disable-background-networking',
+            '--disable-background-timer-throttling',
+            '--disable-backgrounding-occluded-windows',
+            '--disable-breakpad',
+            '--disable-component-update',
+            '--disable-default-apps',
+            '--disable-extensions',
+            '--disable-features=AudioServiceOutOfProcess',
+            '--disable-hang-monitor',
+            '--disable-ipc-flooding-protection',
+            '--disable-notifications',
+            '--disable-print-preview',
+            '--disable-prompt-on-repost',
+            '--disable-renderer-backgrounding',
+            '--disable-sync',
+            '--mute-audio',
+            '--no-default-browser-check',
+            '--no-first-run'
         ]
     });
-    console.log("✅ [SISTEMA] Puppeteer listo para operar en la nube.");
+    console.log("✅ [SISTEMA] Puppeteer listo y optimizado para 1GB RAM.");
 }
 
 async function ensureBrowser() {
@@ -56,7 +75,7 @@ async function fetchBcvRateFromWeb() {
     let bcvPage;
     try {
         bcvPage = await browser.newPage();
-        await bcvPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+        await bcvPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36');
 
         await bcvPage.setRequestInterception(true);
         bcvPage.on('request', (req) => {
@@ -64,17 +83,14 @@ async function fetchBcvRateFromWeb() {
             else req.continue();
         });
 
-        // Aumentado a 60 segundos por la lentitud de los servidores gratuitos
-        await bcvPage.goto('https://www.bcv.org.ve/', { waitUntil: 'domcontentloaded', timeout: 60000 });
+        await bcvPage.goto('https://www.bcv.org.ve/', { waitUntil: 'domcontentloaded', timeout: 35000 });
         const exactSelector = '#dolar .field-content .row.recuadrotsmc .centrado.textp strong.strong-tb';
-        await bcvPage.waitForSelector(exactSelector, { timeout: 20000 }).catch(() => {});
+        await bcvPage.waitForSelector(exactSelector, { timeout: 15000 }).catch(() => {});
 
         const rawText = await bcvPage.evaluate((sel) => {
             const el = document.querySelector(sel);
             return el ? el.innerText : null;
         }, exactSelector);
-
-        await bcvPage.close();
 
         if (rawText) {
             let cleanText = rawText.replace(/[^0-9,.]/g, '').replace(/\./g, '').replace(',', '.');
@@ -85,10 +101,12 @@ async function fetchBcvRateFromWeb() {
             }
         }
     } catch (error) {
-        console.log(`❌ [BCV SCRAPER] Error:`, error.message);
+        console.log(`❌ Error BCV:`, error.message);
+    } finally {
+        // OPTIMIZACIÓN: finally garantiza que la pestaña se cierre SIEMPRE, liberando RAM.
         if (bcvPage && !bcvPage.isClosed()) await bcvPage.close();
+        isFetchingBcv = false;
     }
-    isFetchingBcv = false;
     return cachedBcvRate;
 }
 
@@ -107,12 +125,12 @@ app.get('/api/bcv', async (req, res) => {
 app.get('/api/merchant/:userNo', async (req, res) => {
     await ensureBrowser();
     const userNo = req.params.userNo;
-    console.log(`\n🚀 [NUEVO] Petición API Stats recibida para: ${userNo}`);
+    console.log(`\n🚀 [NUEVO] Clonando petición API de Binance para: ${userNo}`);
 
     let page;
     try {
         page = await browser.newPage();
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36');
 
         await page.setRequestInterception(true);
         page.on('request', (req) => {
@@ -120,14 +138,10 @@ app.get('/api/merchant/:userNo', async (req, res) => {
             else req.continue();
         });
 
-        console.log(`⏳ [STATS] Navegando a Binance...`);
-        // Aumentado a 60 segundos
         await page.goto(`https://c2c.binance.com/es-LA/advertiserDetail?advertiserNo=${userNo}`, {
             waitUntil: 'domcontentloaded',
-            timeout: 60000
+            timeout: 30000
         });
-
-        console.log(`✅ [STATS] Página cargada, extrayendo Fetch interno...`);
 
         const statsData = await page.evaluate(async (uid) => {
             try {
@@ -140,27 +154,23 @@ app.get('/api/merchant/:userNo', async (req, res) => {
                         "lang": "es-LA"
                     }
                 });
-                const json = await response.json();
-                return json;
+                return await response.json();
             } catch(e) {
                 return { error: "Fallo leyendo memoria: " + e.message };
             }
         }, userNo);
 
-        await page.close();
-
         if (statsData && statsData.code === "000000") {
-            console.log(`🟢 [STATS] Éxito. Entregando datos a la App.`);
+            console.log(`🟢 [APP ANDROID] ¡Datos extraídos con éxito!`);
             res.json(statsData);
         } else {
-            console.log(`⚠️ [STATS] Fallo en la API interna de Binance. Respuesta:`, JSON.stringify(statsData).substring(0, 100));
-            res.status(500).json({ error: "Bloqueo o fallo de Binance", details: statsData });
+            res.status(500).json({ error: "No se pudo extraer la información." });
         }
-
     } catch (error) {
-        if (page && !page.isClosed()) await page.close();
-        console.log(`❌ [STATS] Error fatal:`, error.message);
-        res.status(500).json({ error: error.message });
+        console.log(`❌ Error Binance Merchant:`, error.message);
+        res.status(500).json({ error: "Error interno" });
+    } finally {
+        if (page && !page.isClosed()) await page.close(); // Liberación de RAM garantizada
     }
 });
 
@@ -168,22 +178,14 @@ app.get('/api/merchant/:userNo', async (req, res) => {
 app.post('/api/comments', async (req, res) => {
     await ensureBrowser();
     const { userNo, page = 1 } = req.body;
-    console.log(`\n🚀 [NUEVO] Petición Comentarios recibida. User: ${userNo} | Página: ${page}`);
 
     let tempPage;
     try {
         tempPage = await browser.newPage();
         await tempPage.setBypassCSP(true);
-        await tempPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+        await tempPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36');
 
-        console.log(`⏳ [COMENTARIOS] Navegando a Binance...`);
-        // Aumentado a 60 segundos
-        await tempPage.goto(`https://c2c.binance.com/es-LA/advertiserDetail?advertiserNo=${userNo}`, {
-            waitUntil: 'domcontentloaded',
-            timeout: 60000
-        });
-
-        console.log(`✅ [COMENTARIOS] Página cargada, extrayendo token y fetch...`);
+        await tempPage.goto(`https://c2c.binance.com/es-LA/advertiserDetail?advertiserNo=${userNo}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
         const reviewsData = await tempPage.evaluate(async (uid, pageNum) => {
             const match = document.cookie.match(new RegExp('(^| )csrftoken=([^;]+)'));
@@ -196,20 +198,9 @@ app.post('/api/comments', async (req, res) => {
                 const jsonPos = await resPos.json();
                 const resNeg = await fetch(url, { method: 'POST', headers: headers, body: JSON.stringify({ page: pageNum, rows: 20, reviewRole: 1, quickCommentTagId: null, sort: "desc", userNo: uid, rating: 3 }) });
                 const jsonNeg = await resNeg.json();
-                return { pos: jsonPos, neg: jsonNeg, cookieFound: !!csrf };
+                return { pos: jsonPos, neg: jsonNeg };
             } catch (e) { return { error: e.toString() }; }
         }, userNo, page);
-
-        await tempPage.close();
-
-        if (reviewsData.error) {
-            console.log(`⚠️ [COMENTARIOS] Error en el script del navegador:`, reviewsData.error);
-            return res.status(500).json({ error: "Fallo leyendo comentarios" });
-        }
-
-        if (!reviewsData.cookieFound) {
-            console.log(`⚠️ [COMENTARIOS] ADVERTENCIA: No se pudo extraer el CSRF Token. Es probable que Cloudflare esté bloqueando.`);
-        }
 
         let totalPos = 0, totalNeg = 0;
         if (reviewsData.pos && reviewsData.pos.countsPerRating) {
@@ -237,18 +228,18 @@ app.post('/api/comments', async (req, res) => {
         if (posList.length > 0) combinedReviews = combinedReviews.concat(procesarComentarios(posList, "POSITIVE"));
         if (negList.length > 0) combinedReviews = combinedReviews.concat(procesarComentarios(negList, "NEGATIVE"));
 
-        console.log(`🟢 [COMENTARIOS] Éxito. ${combinedReviews.length} comentarios enviados a la App.`);
+        console.log(`🟢 [APP ANDROID] Comentarios procesados y enviados.`);
         res.json({ code: "000000", data: { data: combinedReviews, totalPositivos: totalPos, totalNegativos: totalNeg } });
     } catch (error) {
-        if (tempPage && !tempPage.isClosed()) await tempPage.close();
-        console.log(`❌ [COMENTARIOS] Error fatal:`, error.message);
-        res.status(500).json({ error: error.message });
+        res.status(500).json({ error: "Error interno" });
+    } finally {
+        if (tempPage && !tempPage.isClosed()) await tempPage.close(); // Liberación de RAM garantizada
     }
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', async () => {
-    console.log(`🚀 Servidor corriendo en el puerto ${PORT} en la nube (Render)`);
+    console.log(`🚀 Servidor corriendo en el puerto ${PORT}`);
     await initBrowser();
     startBcvAutoRefresh();
 });
