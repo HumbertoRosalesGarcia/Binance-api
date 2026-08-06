@@ -197,9 +197,9 @@ app.post('/api/users/time', (req, res) => {
         users[email].consumedSeconds += seconds;
         let maxTime = users[email].planDuration || 2592000;
 
-        // Bloqueo Automático del servidor cuando el tiempo llega a 0
+        // Bloqueo Automático al finalizar el plan
         if (users[email].role !== 'ADMIN' && users[email].consumedSeconds >= maxTime) {
-            users[email].isBanned = true; // Se bloquea automáticamente
+            users[email].isBanned = true;
         }
 
         safeWriteUsers(users);
@@ -218,14 +218,11 @@ app.post('/api/users/manage', (req, res) => {
         if (action === 'setRole' && role) {
             users[email].role = role;
             users[email].consumedSeconds = 0;
-            users[email].planDuration = planDuration || 2592000;
-            users[email].isBanned = false; // Desbloqueo automático al asignar nuevo plan
+            users[email].planDuration = planDuration || 2592000; // Guarda 1 mes, 6 meses o 1 año
         }
-        if (action === 'resetTime') {
-            users[email].consumedSeconds = 0;
-            users[email].isBanned = false; // Desbloqueo automático al reiniciar tiempo
-        }
+        if (action === 'resetTime') users[email].consumedSeconds = 0;
 
+        // Protección Máxima: El Admin principal no se puede banear ni modificar
         if (action === 'ban' && email !== 'zonacami77777@gmail.com') users[email].isBanned = true;
         if (action === 'unban') users[email].isBanned = false;
 
