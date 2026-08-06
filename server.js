@@ -22,14 +22,14 @@ if (!fs.existsSync(backupsDir)) fs.mkdirSync(backupsDir, { recursive: true });
 const usersFile = path.join(backupsDir, 'users.json');
 if (!fs.existsSync(usersFile)) fs.writeFileSync(usersFile, JSON.stringify({}));
 
-function safeReadUsers() {
-    try { return JSON.parse(fs.readFileSync(usersFile, 'utf8')); }
-    catch (e) { return {}; }
-}
-function safeWriteUsers(users) {
-    try { fs.writeFileSync(usersFile, JSON.stringify(users, null, 2)); }
-    catch (e) { console.error("Error guardando usuarios"); }
-}
+const chatFile = path.join(backupsDir, 'chat.json');
+if (!fs.existsSync(chatFile)) fs.writeFileSync(chatFile, JSON.stringify({}));
+
+function safeReadUsers() { try { return JSON.parse(fs.readFileSync(usersFile, 'utf8')); } catch (e) { return {}; } }
+function safeWriteUsers(users) { try { fs.writeFileSync(usersFile, JSON.stringify(users, null, 2)); } catch (e) { console.error("Error guardando usuarios"); } }
+
+function safeReadChat() { try { return JSON.parse(fs.readFileSync(chatFile, 'utf8')); } catch (e) { return {}; } }
+function safeWriteChat(chats) { try { fs.writeFileSync(chatFile, JSON.stringify(chats, null, 2)); } catch (e) { console.error("Error guardando chat"); } }
 
 let browser;
 let cachedBcvRate = 0.0;
@@ -37,28 +37,15 @@ let isFetchingBcv = false;
 
 async function initBrowser() {
     if (browser) { try { await browser.close(); } catch (e) {} }
-    console.log("⏳ [SISTEMA] Iniciando motor Puppeteer (Modo Ultra Bajo Consumo)...");
+    console.log("⏳ [SISTEMA] Iniciando motor Puppeteer...");
     browser = await puppeteer.launch({
-        headless: true,
-        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null,
-        ignoreHTTPSErrors: true,
-        args: [
-            '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu',
-            '--no-zygote', '--single-process', '--disable-background-networking',
-            '--disable-background-timer-throttling', '--disable-backgrounding-occluded-windows',
-            '--disable-breakpad', '--disable-component-update', '--disable-default-apps',
-            '--disable-extensions', '--disable-features=AudioServiceOutOfProcess',
-            '--disable-hang-monitor', '--disable-ipc-flooding-protection', '--disable-notifications',
-            '--disable-print-preview', '--disable-prompt-on-repost', '--disable-renderer-backgrounding',
-            '--disable-sync', '--mute-audio', '--no-default-browser-check', '--no-first-run'
-        ]
+        headless: true, executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null, ignoreHTTPSErrors: true,
+        args: [ '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--no-zygote', '--single-process', '--disable-background-networking', '--disable-background-timer-throttling', '--disable-backgrounding-occluded-windows', '--disable-breakpad', '--disable-component-update', '--disable-default-apps', '--disable-extensions', '--disable-features=AudioServiceOutOfProcess', '--disable-hang-monitor', '--disable-ipc-flooding-protection', '--disable-notifications', '--disable-print-preview', '--disable-prompt-on-repost', '--disable-renderer-backgrounding', '--disable-sync', '--mute-audio', '--no-default-browser-check', '--no-first-run' ]
     });
     console.log("✅ [SISTEMA] Puppeteer listo.");
 }
 
-async function ensureBrowser() {
-    if (!browser || !browser.isConnected()) await initBrowser();
-}
+async function ensureBrowser() { if (!browser || !browser.isConnected()) await initBrowser(); }
 
 // --- BCV ---
 async function fetchBcvRateFromWeb() {
@@ -80,8 +67,7 @@ async function fetchBcvRateFromWeb() {
             const parsedRate = parseFloat(cleanText);
             if (!isNaN(parsedRate) && parsedRate > 0) { cachedBcvRate = parsedRate; }
         }
-    } catch (error) { console.log(`❌ Error BCV:`, error.message); }
-    finally { if (bcvPage && !bcvPage.isClosed()) await bcvPage.close(); isFetchingBcv = false; }
+    } catch (error) { console.log(`❌ Error BCV:`, error.message); } finally { if (bcvPage && !bcvPage.isClosed()) await bcvPage.close(); isFetchingBcv = false; }
     return cachedBcvRate;
 }
 
@@ -98,83 +84,63 @@ app.get('/api/bcv', async (req, res) => {
 
 // --- BINANCE ---
 app.get('/api/merchant/:userNo', async (req, res) => {
-    await ensureBrowser();
-    let page;
+    await ensureBrowser(); let page;
     try {
-        page = await browser.newPage();
-        await page.setUserAgent('Mozilla/5.0');
-        await page.setRequestInterception(true);
+        page = await browser.newPage(); await page.setUserAgent('Mozilla/5.0'); await page.setRequestInterception(true);
         page.on('request', (req) => { if (['image', 'font', 'media', 'stylesheet'].includes(req.resourceType())) req.abort(); else req.continue(); });
         await page.goto(`https://c2c.binance.com/es-LA/advertiserDetail?advertiserNo=${req.params.userNo}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
-        const statsData = await page.evaluate(async (uid) => {
-            try {
-                const url = `https://c2c.binance.com/bapi/c2c/v2/friendly/c2c/user/profile-and-ads-list?userNo=${uid}`;
-                const response = await fetch(url, { method: 'GET', headers: { "content-type": "application/json", "clienttype": "web", "lang": "es-LA" } });
-                return await response.json();
-            } catch(e) { return { error: "Fallo: " + e.message }; }
-        }, req.params.userNo);
+        const statsData = await page.evaluate(async (uid) => { try { const url = `https://c2c.binance.com/bapi/c2c/v2/friendly/c2c/user/profile-and-ads-list?userNo=${uid}`; const response = await fetch(url, { method: 'GET', headers: { "content-type": "application/json", "clienttype": "web", "lang": "es-LA" } }); return await response.json(); } catch(e) { return { error: "Fallo: " + e.message }; } }, req.params.userNo);
         if (statsData && statsData.code === "000000") res.json(statsData); else res.status(500).json({ error: "Fallo" });
-    } catch (error) { res.status(500).json({ error: "Error interno" }); }
-    finally { if (page && !page.isClosed()) await page.close(); }
+    } catch (error) { res.status(500).json({ error: "Error interno" }); } finally { if (page && !page.isClosed()) await page.close(); }
 });
 
 app.post('/api/comments', async (req, res) => {
-    await ensureBrowser();
-    const { userNo, page = 1 } = req.body;
-    let tempPage;
+    await ensureBrowser(); const { userNo, page = 1 } = req.body; let tempPage;
     try {
-        tempPage = await browser.newPage();
-        await tempPage.setBypassCSP(true);
-        await tempPage.setUserAgent('Mozilla/5.0');
+        tempPage = await browser.newPage(); await tempPage.setBypassCSP(true); await tempPage.setUserAgent('Mozilla/5.0');
         await tempPage.goto(`https://c2c.binance.com/es-LA/advertiserDetail?advertiserNo=${userNo}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
         const reviewsData = await tempPage.evaluate(async (uid, pageNum) => {
-            const match = document.cookie.match(new RegExp('(^| )csrftoken=([^;]+)'));
-            const csrf = match ? match[2] : '';
-            const url = "https://c2c.binance.com/bapi/c2c/v1/friendly/c2c/review/list-by-page";
-            const headers = { "content-type": "application/json", "clienttype": "web", "lang": "es-LA", "csrftoken": csrf };
-            try {
-                const resPos = await fetch(url, { method: 'POST', headers: headers, body: JSON.stringify({ page: pageNum, rows: 20, reviewRole: 1, quickCommentTagId: null, sort: "desc", userNo: uid, rating: 1 }) });
-                const jsonPos = await resPos.json();
-                const resNeg = await fetch(url, { method: 'POST', headers: headers, body: JSON.stringify({ page: pageNum, rows: 20, reviewRole: 1, quickCommentTagId: null, sort: "desc", userNo: uid, rating: 3 }) });
-                const jsonNeg = await resNeg.json();
-                return { pos: jsonPos, neg: jsonNeg };
-            } catch (e) { return { error: e.toString() }; }
+            const match = document.cookie.match(new RegExp('(^| )csrftoken=([^;]+)')); const csrf = match ? match[2] : ''; const url = "https://c2c.binance.com/bapi/c2c/v1/friendly/c2c/review/list-by-page"; const headers = { "content-type": "application/json", "clienttype": "web", "lang": "es-LA", "csrftoken": csrf };
+            try { const resPos = await fetch(url, { method: 'POST', headers: headers, body: JSON.stringify({ page: pageNum, rows: 20, reviewRole: 1, quickCommentTagId: null, sort: "desc", userNo: uid, rating: 1 }) }); const jsonPos = await resPos.json(); const resNeg = await fetch(url, { method: 'POST', headers: headers, body: JSON.stringify({ page: pageNum, rows: 20, reviewRole: 1, quickCommentTagId: null, sort: "desc", userNo: uid, rating: 3 }) }); const jsonNeg = await resNeg.json(); return { pos: jsonPos, neg: jsonNeg }; } catch (e) { return { error: e.toString() }; }
         }, userNo, page);
-
-        let totalPos = 0, totalNeg = 0;
-        if (reviewsData.pos && reviewsData.pos.countsPerRating) { totalPos = reviewsData.pos.countsPerRating["1"] || 0; totalNeg = reviewsData.pos.countsPerRating["3"] || reviewsData.pos.countsPerRating["2"] || 0; }
-        const posList = (reviewsData.pos && reviewsData.pos.data) ? reviewsData.pos.data : [];
-        const negList = (reviewsData.neg && reviewsData.neg.data) ? reviewsData.neg.data : [];
-        let combinedReviews = [];
+        let totalPos = 0, totalNeg = 0; if (reviewsData.pos && reviewsData.pos.countsPerRating) { totalPos = reviewsData.pos.countsPerRating["1"] || 0; totalNeg = reviewsData.pos.countsPerRating["3"] || reviewsData.pos.countsPerRating["2"] || 0; }
+        const posList = (reviewsData.pos && reviewsData.pos.data) ? reviewsData.pos.data : []; const negList = (reviewsData.neg && reviewsData.neg.data) ? reviewsData.neg.data : []; let combinedReviews = [];
         const procesarComentarios = (array, tipo) => { return array.map(item => { let name = "Usuario anónimo"; if (item.reviewer && item.reviewer.nickname) name = item.reviewer.nickname; else if (item.nickname) name = item.nickname; let pMethod = item.reviewer && item.reviewer.paymethod ? item.reviewer.paymethod : ""; let content = item.comments || item.content || ""; if (content === "null") content = ""; let tag = item.reviewTagList && item.reviewTagList.length > 0 ? item.reviewTagList[0] : ""; return { ratingType: tipo, nickName: name, content: content.trim(), createTime: item.createTime || Date.now(), payMethod: pMethod, tag: tag }; }); };
-        if (posList.length > 0) combinedReviews = combinedReviews.concat(procesarComentarios(posList, "POSITIVE"));
-        if (negList.length > 0) combinedReviews = combinedReviews.concat(procesarComentarios(negList, "NEGATIVE"));
+        if (posList.length > 0) combinedReviews = combinedReviews.concat(procesarComentarios(posList, "POSITIVE")); if (negList.length > 0) combinedReviews = combinedReviews.concat(procesarComentarios(negList, "NEGATIVE"));
         res.json({ code: "000000", data: { data: combinedReviews, totalPositivos: totalPos, totalNegativos: totalNeg } });
-    } catch (error) { res.status(500).json({ error: "Error" }); }
-    finally { if (tempPage && !tempPage.isClosed()) await tempPage.close(); }
+    } catch (error) { res.status(500).json({ error: "Error" }); } finally { if (tempPage && !tempPage.isClosed()) await tempPage.close(); }
 });
 
 // --- RESPALDOS ---
-app.post('/api/backup/:userId', (req, res) => {
-    try {
-        fs.writeFileSync(path.join(backupsDir, `${req.params.userId}.json`), JSON.stringify(req.body, null, 2));
-        res.json({ code: "000000", message: "Respaldo subido correctamente" });
-    } catch (error) { res.status(500).json({ error: "Error" }); }
+app.post('/api/backup/:userId', (req, res) => { try { fs.writeFileSync(path.join(backupsDir, `${req.params.userId}.json`), JSON.stringify(req.body, null, 2)); res.json({ code: "000000", message: "Respaldo subido correctamente" }); } catch (error) { res.status(500).json({ error: "Error" }); } });
+app.get('/api/backup/:userId', (req, res) => { try { const filePath = path.join(backupsDir, `${req.params.userId}.json`); if (fs.existsSync(filePath)) res.json(JSON.parse(fs.readFileSync(filePath, 'utf8'))); else res.json({}); } catch (error) { res.status(500).json({ error: "Error" }); } });
+
+// --- CHAT DE SERVICIO AL CLIENTE ---
+app.get('/api/chat/:userEmail', (req, res) => {
+    const chats = safeReadChat();
+    res.json(chats[req.params.userEmail] || []);
 });
 
-app.get('/api/backup/:userId', (req, res) => {
-    try {
-        const filePath = path.join(backupsDir, `${req.params.userId}.json`);
-        if (fs.existsSync(filePath)) res.json(JSON.parse(fs.readFileSync(filePath, 'utf8')));
-        else res.json({});
-    } catch (error) { res.status(500).json({ error: "Error" }); }
+app.get('/api/admin/chats', (req, res) => {
+    res.json(safeReadChat());
+});
+
+app.post('/api/chat', (req, res) => {
+    const { sender, receiver, text } = req.body;
+    const chats = safeReadChat();
+    // La llave del chat siempre será el correo del cliente, sin importar quién envía
+    const chatKey = (sender === 'zonacami77777@gmail.com') ? receiver : sender;
+
+    if (!chats[chatKey]) chats[chatKey] = [];
+    chats[chatKey].push({ sender, text, timestamp: Date.now() });
+
+    safeWriteChat(chats);
+    res.json({ code: "000000", message: "Enviado" });
 });
 
 // --- USUARIOS Y ROLES ---
 app.post('/api/users/sync', (req, res) => {
-    const { email, name } = req.body;
-    let users = safeReadUsers();
-
+    const { email, name } = req.body; let users = safeReadUsers();
     if (!users[email]) {
         const defaultRole = email === 'zonacami77777@gmail.com' ? 'ADMIN' : 'INVITADO';
         users[email] = { name: name, role: defaultRole, registeredAt: Date.now(), consumedSeconds: 0, isBanned: false, planDuration: 2592000 };
@@ -186,56 +152,46 @@ app.post('/api/users/sync', (req, res) => {
         if (users[email].planDuration === undefined) users[email].planDuration = 2592000;
     }
 
+    // Auto-bloqueo si entra y ya se le acabó el tiempo
+    if (users[email].role !== 'ADMIN' && users[email].consumedSeconds >= users[email].planDuration) {
+        users[email].isBanned = true;
+    }
+
     safeWriteUsers(users);
     res.json({ role: users[email].role, isBanned: users[email].isBanned, consumedSeconds: users[email].consumedSeconds, planDuration: users[email].planDuration });
 });
 
 app.post('/api/users/time', (req, res) => {
-    const { email, seconds } = req.body;
-    let users = safeReadUsers();
+    const { email, seconds } = req.body; let users = safeReadUsers();
     if (users[email]) {
         users[email].consumedSeconds += seconds;
         let maxTime = users[email].planDuration || 2592000;
 
-        // Bloqueo Automático al finalizar el plan
+        // Bloqueo Automático Inmediato al finalizar el plan
         if (users[email].role !== 'ADMIN' && users[email].consumedSeconds >= maxTime) {
             users[email].isBanned = true;
         }
-
         safeWriteUsers(users);
     }
     res.json({ code: "000000" });
 });
 
-app.get('/api/users', (req, res) => {
-    res.json(safeReadUsers());
-});
+app.get('/api/users', (req, res) => { res.json(safeReadUsers()); });
 
 app.post('/api/users/manage', (req, res) => {
-    const { email, action, role, planDuration } = req.body;
-    let users = safeReadUsers();
+    const { email, action, role, planDuration } = req.body; let users = safeReadUsers();
     if (users[email]) {
-        if (action === 'setRole' && role) {
-            users[email].role = role;
-            users[email].consumedSeconds = 0;
-            users[email].planDuration = planDuration || 2592000; // Guarda 1 mes, 6 meses o 1 año
-        }
-        if (action === 'resetTime') users[email].consumedSeconds = 0;
+        if (action === 'setRole' && role) { users[email].role = role; users[email].consumedSeconds = 0; users[email].planDuration = planDuration || 2592000; users[email].isBanned = false; } // Al dar plan, se desbanea
+        if (action === 'resetTime') { users[email].consumedSeconds = 0; users[email].isBanned = false; }
 
-        // Protección Máxima: El Admin principal no se puede banear ni modificar
+        // Protección Máxima
         if (action === 'ban' && email !== 'zonacami77777@gmail.com') users[email].isBanned = true;
-        if (action === 'unban') users[email].isBanned = false;
+        if (action === 'unban') { users[email].isBanned = false; users[email].consumedSeconds = 0; } // Reiniciar contador al desbanear para que pueda entrar
 
         safeWriteUsers(users);
         res.json({ code: "000000", message: "Éxito" });
-    } else {
-        res.status(404).json({ error: "No encontrado" });
-    }
+    } else { res.status(404).json({ error: "No encontrado" }); }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0', async () => {
-    console.log(`🚀 Servidor corriendo en el puerto ${PORT}`);
-    await initBrowser();
-    startBcvAutoRefresh();
-});
+app.listen(PORT, '0.0.0.0', async () => { console.log(`🚀 Servidor corriendo en el puerto ${PORT}`); await initBrowser(); startBcvAutoRefresh(); });
