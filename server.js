@@ -31,6 +31,8 @@ function safeWriteUsers(users) { try { fs.writeFileSync(usersFile, JSON.stringif
 function safeReadChat() { try { return JSON.parse(fs.readFileSync(chatFile, 'utf8')); } catch (e) { return {}; } }
 function safeWriteChat(chats) { try { fs.writeFileSync(chatFile, JSON.stringify(chats, null, 2)); } catch (e) { console.error("Error guardando chat"); } }
 
+const ADMIN_EMAIL = 'zonacami77777@gmail.com';
+
 let browser;
 let cachedBcvRate = 0.0;
 let isFetchingBcv = false;
@@ -116,53 +118,39 @@ app.post('/api/backup/:userId', (req, res) => { try { fs.writeFileSync(path.join
 app.get('/api/backup/:userId', (req, res) => { try { const filePath = path.join(backupsDir, `${req.params.userId}.json`); if (fs.existsSync(filePath)) res.json(JSON.parse(fs.readFileSync(filePath, 'utf8'))); else res.json({}); } catch (error) { res.status(500).json({ error: "Error" }); } });
 
 // --- CHAT DE SERVICIO AL CLIENTE ---
-app.get('/api/chat/:userEmail', (req, res) => {
-    const chats = safeReadChat();
-    res.json(chats[req.params.userEmail] || []);
-});
-
-app.get('/api/admin/chats', (req, res) => {
-    res.json(safeReadChat());
-});
-
+app.get('/api/chat/:userEmail', (req, res) => { const chats = safeReadChat(); res.json(chats[req.params.userEmail] || []); });
+app.get('/api/admin/chats', (req, res) => { res.json(safeReadChat()); });
 app.post('/api/chat', (req, res) => {
-    const { sender, receiver, text } = req.body;
-    const chats = safeReadChat();
-    const chatKey = (sender === 'zonacami77777@gmail.com') ? receiver : sender;
-
+    const { sender, receiver, text } = req.body; const chats = safeReadChat();
+    const chatKey = (sender.toLowerCase() === ADMIN_EMAIL) ? receiver : sender;
     if (!chats[chatKey]) chats[chatKey] = [];
     chats[chatKey].push({ sender, text, timestamp: Date.now() });
-
-    safeWriteChat(chats);
-    res.json({ code: "000000", message: "Enviado" });
+    safeWriteChat(chats); res.json({ code: "000000", message: "Enviado" });
 });
-
-// Nuevo EndPoint para limpiar historial de chat
 app.delete('/api/chat/:userEmail', (req, res) => {
     const chats = safeReadChat();
-    if (chats[req.params.userEmail]) {
-        delete chats[req.params.userEmail];
-        safeWriteChat(chats);
-    }
+    if (chats[req.params.userEmail]) { delete chats[req.params.userEmail]; safeWriteChat(chats); }
     res.json({ code: "000000", message: "Chat borrado exitosamente" });
 });
 
 // --- USUARIOS Y ROLES ---
 app.post('/api/users/sync', (req, res) => {
     const { email, name } = req.body; let users = safeReadUsers();
+    const isSuperAdmin = email.toLowerCase() === ADMIN_EMAIL;
+
     if (!users[email]) {
-        const defaultRole = email === 'zonacami77777@gmail.com' ? 'ADMIN' : 'INVITADO';
+        const defaultRole = isSuperAdmin ? 'ADMIN' : 'INVITADO';
         users[email] = { name: name, role: defaultRole, registeredAt: Date.now(), consumedSeconds: 0, isBanned: false, planDuration: 2592000 };
     } else {
         users[email].name = name;
-        if (email === 'zonacami77777@gmail.com') users[email].role = 'ADMIN';
+        if (isSuperAdmin) users[email].role = 'ADMIN';
         if (users[email].consumedSeconds === undefined) users[email].consumedSeconds = 0;
         if (users[email].isBanned === undefined) users[email].isBanned = false;
         if (users[email].planDuration === undefined) users[email].planDuration = 2592000;
     }
 
-    // Auto-bloqueo si entra y ya se le acabó el tiempo
-    if (users[email].role !== 'ADMIN' && users[email].consumedSeconds >= users[email].planDuration) {
+    // Auto-bloqueo si entra y ya se le acabó el tiempo (Solo si no es admin)
+    if (!isSuperAdmin && users[email].consumedSeconds >= users[email].planDuration) {
         users[email].isBanned = true;
     }
 
@@ -172,14 +160,11 @@ app.post('/api/users/sync', (req, res) => {
 
 app.post('/api/users/time', (req, res) => {
     const { email, seconds } = req.body; let users = safeReadUsers();
-    if (users[email]) {
+    const isSuperAdmin = email.toLowerCase() === ADMIN_EMAIL;
+    if (users[email] && !isSuperAdmin) {
         users[email].consumedSeconds += seconds;
         let maxTime = users[email].planDuration || 2592000;
-
-        // Bloqueo Automático Inmediato al finalizar el plan
-        if (users[email].role !== 'ADMIN' && users[email].consumedSeconds >= maxTime) {
-            users[email].isBanned = true;
-        }
+        if (users[email].consumedSeconds >= maxTime) { users[email].isBanned = true; }
         safeWriteUsers(users);
     }
     res.json({ code: "000000" });
@@ -190,10 +175,12 @@ app.get('/api/users', (req, res) => { res.json(safeReadUsers()); });
 app.post('/api/users/manage', (req, res) => {
     const { email, action, role, planDuration } = req.body; let users = safeReadUsers();
     if (users[email]) {
+        const isSuperAdmin = email.toLowerCase() === ADMIN_EMAIL;
+
         if (action === 'setRole' && role) { users[email].role = role; users[email].consumedSeconds = 0; users[email].planDuration = planDuration || 2592000; users[email].isBanned = false; }
         if (action === 'resetTime') { users[email].consumedSeconds = 0; users[email].isBanned = false; }
 
-        if (action === 'ban' && email !== 'zonacami77777@gmail.com') users[email].isBanned = true;
+        if (action === 'ban' && !isSuperAdmin) users[email].isBanned = true;
         if (action === 'unban') { users[email].isBanned = false; users[email].consumedSeconds = 0; }
 
         safeWriteUsers(users);
