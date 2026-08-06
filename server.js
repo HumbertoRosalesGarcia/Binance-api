@@ -128,7 +128,6 @@ app.get('/api/admin/chats', (req, res) => {
 app.post('/api/chat', (req, res) => {
     const { sender, receiver, text } = req.body;
     const chats = safeReadChat();
-    // La llave del chat siempre será el correo del cliente, sin importar quién envía
     const chatKey = (sender === 'zonacami77777@gmail.com') ? receiver : sender;
 
     if (!chats[chatKey]) chats[chatKey] = [];
@@ -136,6 +135,16 @@ app.post('/api/chat', (req, res) => {
 
     safeWriteChat(chats);
     res.json({ code: "000000", message: "Enviado" });
+});
+
+// Nuevo EndPoint para limpiar historial de chat
+app.delete('/api/chat/:userEmail', (req, res) => {
+    const chats = safeReadChat();
+    if (chats[req.params.userEmail]) {
+        delete chats[req.params.userEmail];
+        safeWriteChat(chats);
+    }
+    res.json({ code: "000000", message: "Chat borrado exitosamente" });
 });
 
 // --- USUARIOS Y ROLES ---
@@ -181,12 +190,11 @@ app.get('/api/users', (req, res) => { res.json(safeReadUsers()); });
 app.post('/api/users/manage', (req, res) => {
     const { email, action, role, planDuration } = req.body; let users = safeReadUsers();
     if (users[email]) {
-        if (action === 'setRole' && role) { users[email].role = role; users[email].consumedSeconds = 0; users[email].planDuration = planDuration || 2592000; users[email].isBanned = false; } // Al dar plan, se desbanea
+        if (action === 'setRole' && role) { users[email].role = role; users[email].consumedSeconds = 0; users[email].planDuration = planDuration || 2592000; users[email].isBanned = false; }
         if (action === 'resetTime') { users[email].consumedSeconds = 0; users[email].isBanned = false; }
 
-        // Protección Máxima
         if (action === 'ban' && email !== 'zonacami77777@gmail.com') users[email].isBanned = true;
-        if (action === 'unban') { users[email].isBanned = false; users[email].consumedSeconds = 0; } // Reiniciar contador al desbanear para que pueda entrar
+        if (action === 'unban') { users[email].isBanned = false; users[email].consumedSeconds = 0; }
 
         safeWriteUsers(users);
         res.json({ code: "000000", message: "Éxito" });
