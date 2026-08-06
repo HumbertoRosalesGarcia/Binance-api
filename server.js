@@ -199,21 +199,22 @@ app.post('/api/users/time', (req, res) => {
     res.json({ code: "000000" });
 });
 
-app.get('/api/users', (req, res) => {
-    res.json(JSON.parse(fs.readFileSync(usersFile, 'utf8')));
-});
-
 app.post('/api/users/manage', (req, res) => {
     const { email, action, role } = req.body;
     let users = JSON.parse(fs.readFileSync(usersFile, 'utf8'));
     if (users[email]) {
+        // Al asignar un plan, se reinicia el tiempo para que empiece un ciclo de 30 días limpios
         if (action === 'setRole' && role) {
             users[email].role = role;
-            users[email].consumedSeconds = 0; // Al cambiar el rol como admin, se resetea su tiempo para empezar de 0
+            users[email].consumedSeconds = 0;
         }
         if (action === 'resetTime') users[email].consumedSeconds = 0;
-        if (action === 'ban') users[email].isBanned = true;
+
+        // Protección: El Admin no se puede banear
+        if (action === 'ban' && email !== 'zonacami77777@gmail.com') users[email].isBanned = true;
+
         if (action === 'unban') users[email].isBanned = false;
+
         fs.writeFileSync(usersFile, JSON.stringify(users, null, 2));
         res.json({ code: "000000", message: "Éxito" });
     } else {
