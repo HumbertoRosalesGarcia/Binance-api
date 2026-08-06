@@ -17,26 +17,18 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
 const backupsDir = path.join(__dirname, 'backups');
-if (!fs.existsSync(backupsDir)) {
-    fs.mkdirSync(backupsDir, { recursive: true });
-}
+if (!fs.existsSync(backupsDir)) fs.mkdirSync(backupsDir, { recursive: true });
 
-// NUEVO: Archivo para guardar la base de datos de usuarios y sus roles
 const usersFile = path.join(__dirname, 'users.json');
-if (!fs.existsSync(usersFile)) {
-    fs.writeFileSync(usersFile, JSON.stringify({}));
-}
+if (!fs.existsSync(usersFile)) fs.writeFileSync(usersFile, JSON.stringify({}));
 
 let browser;
 let cachedBcvRate = 0.0;
 let isFetchingBcv = false;
 
 async function initBrowser() {
-    if (browser) {
-        try { await browser.close(); } catch (e) {}
-    }
+    if (browser) { try { await browser.close(); } catch (e) {} }
     console.log("⏳ [SISTEMA] Iniciando motor Puppeteer (Modo Ultra Bajo Consumo)...");
-
     browser = await puppeteer.launch({
         headless: true,
         executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null,
@@ -52,55 +44,35 @@ async function initBrowser() {
             '--disable-sync', '--mute-audio', '--no-default-browser-check', '--no-first-run'
         ]
     });
-    console.log("✅ [SISTEMA] Puppeteer listo y optimizado para 1GB RAM.");
+    console.log("✅ [SISTEMA] Puppeteer listo.");
 }
 
 async function ensureBrowser() {
-    if (!browser || !browser.isConnected()) {
-        console.log("⚠️ [SISTEMA] Navegador desconectado. Reiniciando...");
-        await initBrowser();
-    }
+    if (!browser || !browser.isConnected()) await initBrowser();
 }
 
-// --- FUNCIÓN BCV ---
+// --- BCV ---
 async function fetchBcvRateFromWeb() {
     if (isFetchingBcv) return cachedBcvRate;
     isFetchingBcv = true;
     await ensureBrowser();
-
     let bcvPage;
     try {
         bcvPage = await browser.newPage();
         await bcvPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36');
         await bcvPage.setRequestInterception(true);
-        bcvPage.on('request', (req) => {
-            if (['image', 'font', 'media', 'stylesheet'].includes(req.resourceType())) req.abort();
-            else req.continue();
-        });
-
+        bcvPage.on('request', (req) => { if (['image', 'font', 'media', 'stylesheet'].includes(req.resourceType())) req.abort(); else req.continue(); });
         await bcvPage.goto('https://www.bcv.org.ve/', { waitUntil: 'domcontentloaded', timeout: 35000 });
         const exactSelector = '#dolar .field-content .row.recuadrotsmc .centrado.textp strong.strong-tb';
         await bcvPage.waitForSelector(exactSelector, { timeout: 15000 }).catch(() => {});
-
-        const rawText = await bcvPage.evaluate((sel) => {
-            const el = document.querySelector(sel);
-            return el ? el.innerText : null;
-        }, exactSelector);
-
+        const rawText = await bcvPage.evaluate((sel) => { const el = document.querySelector(sel); return el ? el.innerText : null; }, exactSelector);
         if (rawText) {
             let cleanText = rawText.replace(/[^0-9,.]/g, '').replace(/\./g, '').replace(',', '.');
             const parsedRate = parseFloat(cleanText);
-            if (!isNaN(parsedRate) && parsedRate > 0) {
-                cachedBcvRate = parsedRate;
-                console.log(`🟢 [BCV SCRAPER] Tasa BCV Oficial actualizada: ${cachedBcvRate}`);
-            }
+            if (!isNaN(parsedRate) && parsedRate > 0) { cachedBcvRate = parsedRate; }
         }
-    } catch (error) {
-        console.log(`❌ Error BCV:`, error.message);
-    } finally {
-        if (bcvPage && !bcvPage.isClosed()) await bcvPage.close();
-        isFetchingBcv = false;
-    }
+    } catch (error) { console.log(`❌ Error BCV:`, error.message); }
+    finally { if (bcvPage && !bcvPage.isClosed()) await bcvPage.close(); isFetchingBcv = false; }
     return cachedBcvRate;
 }
 
@@ -115,80 +87,125 @@ app.get('/api/bcv', async (req, res) => {
     res.json({ code: "000000", tasa: cachedBcvRate });
 });
 
-// --- ENDPOINTS BINANCE (Mantenidos igual) ---
-app.get('/api/merchant/:userNo', async (req, res) => { /*...Mantenido por longitud...*/ });
-app.post('/api/comments', async (req, res) => { /*...Mantenido por longitud...*/ });
-
-// --- ENDPOINTS DE RESPALDOS ---
-app.post('/api/backup/:userId', (req, res) => {
-    const userId = req.params.userId;
-    const backupData = req.body;
+// --- BINANCE ---
+app.get('/api/merchant/:userNo', async (req, res) => {
+    await ensureBrowser();
+    let page;
     try {
-        const filePath = path.join(backupsDir, `${userId}.json`);
-        fs.writeFileSync(filePath, JSON.stringify(backupData, null, 2));
-        console.log(`☁️ [NUBE] Respaldo guardado con éxito para el usuario: ${userId}`);
+        page = await browser.newPage();
+        await page.setUserAgent('Mozilla/5.0');
+        await page.setRequestInterception(true);
+        page.on('request', (req) => { if (['image', 'font', 'media', 'stylesheet'].includes(req.resourceType())) req.abort(); else req.continue(); });
+        await page.goto(`https://c2c.binance.com/es-LA/advertiserDetail?advertiserNo=${req.params.userNo}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        const statsData = await page.evaluate(async (uid) => {
+            try {
+                const url = `https://c2c.binance.com/bapi/c2c/v2/friendly/c2c/user/profile-and-ads-list?userNo=${uid}`;
+                const response = await fetch(url, { method: 'GET', headers: { "content-type": "application/json", "clienttype": "web", "lang": "es-LA" } });
+                return await response.json();
+            } catch(e) { return { error: "Fallo: " + e.message }; }
+        }, req.params.userNo);
+        if (statsData && statsData.code === "000000") res.json(statsData); else res.status(500).json({ error: "Fallo" });
+    } catch (error) { res.status(500).json({ error: "Error interno" }); }
+    finally { if (page && !page.isClosed()) await page.close(); }
+});
+
+app.post('/api/comments', async (req, res) => {
+    await ensureBrowser();
+    const { userNo, page = 1 } = req.body;
+    let tempPage;
+    try {
+        tempPage = await browser.newPage();
+        await tempPage.setBypassCSP(true);
+        await tempPage.setUserAgent('Mozilla/5.0');
+        await tempPage.goto(`https://c2c.binance.com/es-LA/advertiserDetail?advertiserNo=${userNo}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        const reviewsData = await tempPage.evaluate(async (uid, pageNum) => {
+            const match = document.cookie.match(new RegExp('(^| )csrftoken=([^;]+)'));
+            const csrf = match ? match[2] : '';
+            const url = "https://c2c.binance.com/bapi/c2c/v1/friendly/c2c/review/list-by-page";
+            const headers = { "content-type": "application/json", "clienttype": "web", "lang": "es-LA", "csrftoken": csrf };
+            try {
+                const resPos = await fetch(url, { method: 'POST', headers: headers, body: JSON.stringify({ page: pageNum, rows: 20, reviewRole: 1, quickCommentTagId: null, sort: "desc", userNo: uid, rating: 1 }) });
+                const jsonPos = await resPos.json();
+                const resNeg = await fetch(url, { method: 'POST', headers: headers, body: JSON.stringify({ page: pageNum, rows: 20, reviewRole: 1, quickCommentTagId: null, sort: "desc", userNo: uid, rating: 3 }) });
+                const jsonNeg = await resNeg.json();
+                return { pos: jsonPos, neg: jsonNeg };
+            } catch (e) { return { error: e.toString() }; }
+        }, userNo, page);
+
+        let totalPos = 0, totalNeg = 0;
+        if (reviewsData.pos && reviewsData.pos.countsPerRating) { totalPos = reviewsData.pos.countsPerRating["1"] || 0; totalNeg = reviewsData.pos.countsPerRating["3"] || reviewsData.pos.countsPerRating["2"] || 0; }
+        const posList = (reviewsData.pos && reviewsData.pos.data) ? reviewsData.pos.data : [];
+        const negList = (reviewsData.neg && reviewsData.neg.data) ? reviewsData.neg.data : [];
+        let combinedReviews = [];
+        const procesarComentarios = (array, tipo) => { return array.map(item => { let name = "Usuario anónimo"; if (item.reviewer && item.reviewer.nickname) name = item.reviewer.nickname; else if (item.nickname) name = item.nickname; let pMethod = item.reviewer && item.reviewer.paymethod ? item.reviewer.paymethod : ""; let content = item.comments || item.content || ""; if (content === "null") content = ""; let tag = item.reviewTagList && item.reviewTagList.length > 0 ? item.reviewTagList[0] : ""; return { ratingType: tipo, nickName: name, content: content.trim(), createTime: item.createTime || Date.now(), payMethod: pMethod, tag: tag }; }); };
+        if (posList.length > 0) combinedReviews = combinedReviews.concat(procesarComentarios(posList, "POSITIVE"));
+        if (negList.length > 0) combinedReviews = combinedReviews.concat(procesarComentarios(negList, "NEGATIVE"));
+        res.json({ code: "000000", data: { data: combinedReviews, totalPositivos: totalPos, totalNegativos: totalNeg } });
+    } catch (error) { res.status(500).json({ error: "Error" }); }
+    finally { if (tempPage && !tempPage.isClosed()) await tempPage.close(); }
+});
+
+// --- RESPALDOS ---
+app.post('/api/backup/:userId', (req, res) => {
+    try {
+        fs.writeFileSync(path.join(backupsDir, `${req.params.userId}.json`), JSON.stringify(req.body, null, 2));
         res.json({ code: "000000", message: "Respaldo subido correctamente" });
-    } catch (error) {
-        res.status(500).json({ error: "Error interno al guardar" });
-    }
+    } catch (error) { res.status(500).json({ error: "Error" }); }
 });
 
 app.get('/api/backup/:userId', (req, res) => {
-    const userId = req.params.userId;
     try {
-        const filePath = path.join(backupsDir, `${userId}.json`);
-        if (fs.existsSync(filePath)) {
-            const data = fs.readFileSync(filePath, 'utf8');
-            console.log(`☁️ [NUBE] Respaldo enviado al dispositivo del usuario: ${userId}`);
-            res.json(JSON.parse(data));
-        } else {
-            console.log(`⚠️ [NUBE] No se encontró respaldo para: ${userId}`);
-            res.json({});
-        }
-    } catch (error) {
-        res.status(500).json({ error: "Error interno al leer" });
-    }
+        const filePath = path.join(backupsDir, `${req.params.userId}.json`);
+        if (fs.existsSync(filePath)) res.json(JSON.parse(fs.readFileSync(filePath, 'utf8')));
+        else res.json({});
+    } catch (error) { res.status(500).json({ error: "Error" }); }
 });
 
-
-// ==========================================
-// NUEVO: GESTIÓN DE USUARIOS Y ROLES (ADMIN PANEL)
-// ==========================================
-
-// Sincronizar y obtener rol al iniciar sesión
+// --- USUARIOS Y ROLES ---
 app.post('/api/users/sync', (req, res) => {
     const { email, name } = req.body;
     let users = JSON.parse(fs.readFileSync(usersFile, 'utf8'));
 
     if (!users[email]) {
-        // Tu correo maestro se asigna como ADMIN automáticamente, los demás BÁSICO.
-        const defaultRole = email === 'zonacami77777@gmail.com' ? 'ADMIN' : 'BÁSICO';
-        users[email] = { name: name, role: defaultRole, registeredAt: Date.now() };
+        const defaultRole = email === 'zonacami77777@gmail.com' ? 'ADMIN' : 'INVITADO';
+        users[email] = { name: name, role: defaultRole, registeredAt: Date.now(), consumedSeconds: 0, isBanned: false };
     } else {
-        users[email].name = name; // Actualiza el nombre por si cambió en Google
-        if (email === 'zonacami77777@gmail.com') users[email].role = 'ADMIN'; // Forzar super-permiso
+        users[email].name = name;
+        if (email === 'zonacami77777@gmail.com') users[email].role = 'ADMIN';
+        if (users[email].consumedSeconds === undefined) users[email].consumedSeconds = 0;
+        if (users[email].isBanned === undefined) users[email].isBanned = false;
     }
 
     fs.writeFileSync(usersFile, JSON.stringify(users, null, 2));
-    res.json({ role: users[email].role });
+    res.json({ role: users[email].role, isBanned: users[email].isBanned, consumedSeconds: users[email].consumedSeconds });
 });
 
-// Obtener toda la lista de usuarios (Solo para panel de Administrador)
-app.get('/api/users', (req, res) => {
-    const users = JSON.parse(fs.readFileSync(usersFile, 'utf8'));
-    res.json(users);
-});
-
-// Cambiar el rol de un usuario manualmente
-app.post('/api/users/role', (req, res) => {
-    const { email, newRole } = req.body;
+app.post('/api/users/time', (req, res) => {
+    const { email, seconds } = req.body;
     let users = JSON.parse(fs.readFileSync(usersFile, 'utf8'));
     if (users[email]) {
-        users[email].role = newRole;
+        users[email].consumedSeconds += seconds;
         fs.writeFileSync(usersFile, JSON.stringify(users, null, 2));
-        res.json({ code: "000000", message: "Rol actualizado con éxito" });
+    }
+    res.json({ code: "000000" });
+});
+
+app.get('/api/users', (req, res) => {
+    res.json(JSON.parse(fs.readFileSync(usersFile, 'utf8')));
+});
+
+app.post('/api/users/manage', (req, res) => {
+    const { email, action, role } = req.body;
+    let users = JSON.parse(fs.readFileSync(usersFile, 'utf8'));
+    if (users[email]) {
+        if (action === 'setRole' && role) users[email].role = role;
+        if (action === 'resetTime') users[email].consumedSeconds = 0;
+        if (action === 'ban') users[email].isBanned = true;
+        if (action === 'unban') users[email].isBanned = false;
+        fs.writeFileSync(usersFile, JSON.stringify(users, null, 2));
+        res.json({ code: "000000", message: "Éxito" });
     } else {
-        res.status(404).json({ error: "Usuario no encontrado" });
+        res.status(404).json({ error: "No encontrado" });
     }
 });
 
