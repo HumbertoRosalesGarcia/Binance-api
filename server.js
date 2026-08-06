@@ -185,6 +185,15 @@ app.post('/api/users/time', (req, res) => {
     let users = JSON.parse(fs.readFileSync(usersFile, 'utf8'));
     if (users[email]) {
         users[email].consumedSeconds += seconds;
+
+        // Si no es ADMIN y superó el límite (1 mes en segundos)
+        if (users[email].role !== 'ADMIN' && users[email].consumedSeconds >= 2592000) {
+            if (users[email].role !== 'INVITADO') {
+                users[email].role = 'INVITADO'; // Se degrada a invitado
+                users[email].consumedSeconds = 0; // Reinicia su tiempo de prueba como invitado
+            }
+        }
+
         fs.writeFileSync(usersFile, JSON.stringify(users, null, 2));
     }
     res.json({ code: "000000" });
@@ -198,7 +207,10 @@ app.post('/api/users/manage', (req, res) => {
     const { email, action, role } = req.body;
     let users = JSON.parse(fs.readFileSync(usersFile, 'utf8'));
     if (users[email]) {
-        if (action === 'setRole' && role) users[email].role = role;
+        if (action === 'setRole' && role) {
+            users[email].role = role;
+            users[email].consumedSeconds = 0; // Al cambiar el rol como admin, se resetea su tiempo para empezar de 0
+        }
         if (action === 'resetTime') users[email].consumedSeconds = 0;
         if (action === 'ban') users[email].isBanned = true;
         if (action === 'unban') users[email].isBanned = false;
