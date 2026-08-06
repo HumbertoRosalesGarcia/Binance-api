@@ -5,6 +5,8 @@ const puppeteer = addExtra(vanillaPuppeteer);
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const cors = require('cors');
 const cron = require('node-cron'); 
+const fs = require('fs'); // NUEVO: Para guardar archivos
+const path = require('path'); // NUEVO: Para rutas de carpetas
 
 const stealth = StealthPlugin();
 stealth.enabledEvasions.delete('sourceurl');
@@ -12,7 +14,52 @@ puppeteer.use(stealth);
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' })); // Aumentado para soportar respaldos grandes
+
+// --- NUEVO: SISTEMA DE RESPALDOS ---
+const backupDir = path.join(__dirname, 'backups');
+if (!fs.existsSync(backupDir)) {
+    fs.mkdirSync(backupDir, { recursive: true });
+    console.log("📁 [SISTEMA] Carpeta de respaldos creada.");
+}
+
+// Guardar/Actualizar el respaldo de un usuario
+app.post('/api/backup/:userId', (req, res) => {
+    try {
+        const userId = req.params.userId;
+        const filePath = path.join(backupDir, `${userId}.json`);
+        
+        // Guardamos todo el JSON que mande la app de Android
+        fs.writeFileSync(filePath, JSON.stringify(req.body), 'utf8');
+        console.log(`☁️ [NUBE] Respaldo guardado con éxito para el usuario: ${userId}`);
+        
+        res.json({ code: "000000", message: "Respaldo sincronizado en el servidor." });
+    } catch (error) {
+        console.error("❌ Error guardando respaldo:", error);
+        res.status(500).json({ error: "Fallo al guardar en el servidor" });
+    }
+});
+
+// Descargar el respaldo de un usuario
+app.get('/api/backup/:userId', (req, res) => {
+    try {
+        const userId = req.params.userId;
+        const filePath = path.join(backupDir, `${userId}.json`);
+        
+        if (fs.existsSync(filePath)) {
+            const data = fs.readFileSync(filePath, 'utf8');
+            console.log(`☁️ [NUBE] Respaldo enviado al dispositivo del usuario: ${userId}`);
+            res.json(JSON.parse(data));
+        } else {
+            // Si es un usuario nuevo en otro tlf y no tiene respaldo
+            res.json({ empty: true });
+        }
+    } catch (error) {
+        console.error("❌ Error descargando respaldo:", error);
+        res.status(500).json({ error: "Fallo al leer del servidor" });
+    }
+});
+// -----------------------------------
 
 let browser;
 let cachedBcvRate = 0.0;
@@ -24,36 +71,21 @@ async function initBrowser() {
     }
     console.log("⏳ [SISTEMA] Iniciando motor Puppeteer (Modo Ultra Bajo Consumo)...");
 
-    // OPTIMIZACIÓN: Flags extremos para servidores de 1GB RAM
     browser = await puppeteer.launch({
         headless: true,
-        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null, // Se conecta al Chromium de tu Dockerfile
+        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null, 
         ignoreHTTPSErrors: true,
         args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage', // Vital para evitar crashes en Docker
-            '--disable-gpu',
-            '--no-zygote',
-            '--single-process', // Ahorra muchísima RAM
-            '--disable-background-networking',
-            '--disable-background-timer-throttling',
-            '--disable-backgrounding-occluded-windows',
-            '--disable-breakpad',
-            '--disable-component-update',
-            '--disable-default-apps',
-            '--disable-extensions',
-            '--disable-features=AudioServiceOutOfProcess',
-            '--disable-hang-monitor',
-            '--disable-ipc-flooding-protection',
-            '--disable-notifications',
-            '--disable-print-preview',
-            '--disable-prompt-on-repost',
-            '--disable-renderer-backgrounding',
-            '--disable-sync',
-            '--mute-audio',
-            '--no-default-browser-check',
-            '--no-first-run'
+            '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', 
+            '--disable-gpu', '--no-zygote', '--single-process', 
+            '--disable-background-networking', '--disable-background-timer-throttling',
+            '--disable-backgrounding-occluded-windows', '--disable-breakpad',
+            '--disable-component-update', '--disable-default-apps', '--disable-extensions',
+            '--disable-features=AudioServiceOutOfProcess', '--disable-hang-monitor',
+            '--disable-ipc-flooding-protection', '--disable-notifications',
+            '--disable-print-preview', '--disable-prompt-on-repost',
+            '--disable-renderer-backgrounding', '--disable-sync', '--mute-audio',
+            '--no-default-browser-check', '--no-first-run'
         ]
     });
     console.log("✅ [SISTEMA] Puppeteer listo y optimizado para 1GB RAM.");
@@ -66,7 +98,6 @@ async function ensureBrowser() {
     }
 }
 
-// --- FUNCIÓN BCV ---
 async function fetchBcvRateFromWeb() {
     if (isFetchingBcv) return cachedBcvRate;
     isFetchingBcv = true;
@@ -103,7 +134,6 @@ async function fetchBcvRateFromWeb() {
     } catch (error) {
         console.log(`❌ Error BCV:`, error.message);
     } finally {
-        // OPTIMIZACIÓN: finally garantiza que la pestaña se cierre SIEMPRE, liberando RAM.
         if (bcvPage && !bcvPage.isClosed()) await bcvPage.close();
         isFetchingBcv = false;
     }
@@ -121,70 +151,45 @@ app.get('/api/bcv', async (req, res) => {
     res.json({ code: "000000", tasa: cachedBcvRate });
 });
 
-// --- ENDPOINT 1: ESTADÍSTICAS ---
 app.get('/api/merchant/:userNo', async (req, res) => {
     await ensureBrowser();
     const userNo = req.params.userNo;
-    console.log(`\n🚀 [NUEVO] Clonando petición API de Binance para: ${userNo}`);
-
     let page;
     try {
         page = await browser.newPage();
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36');
-
         await page.setRequestInterception(true);
         page.on('request', (req) => {
             if (['image', 'font', 'media', 'stylesheet'].includes(req.resourceType())) req.abort();
             else req.continue();
         });
-
-        await page.goto(`https://c2c.binance.com/es-LA/advertiserDetail?advertiserNo=${userNo}`, {
-            waitUntil: 'domcontentloaded',
-            timeout: 30000
-        });
+        await page.goto(`https://c2c.binance.com/es-LA/advertiserDetail?advertiserNo=${userNo}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
         const statsData = await page.evaluate(async (uid) => {
             try {
                 const url = `https://c2c.binance.com/bapi/c2c/v2/friendly/c2c/user/profile-and-ads-list?userNo=${uid}`;
-                const response = await fetch(url, {
-                    method: 'GET',
-                    headers: {
-                        "content-type": "application/json",
-                        "clienttype": "web",
-                        "lang": "es-LA"
-                    }
-                });
+                const response = await fetch(url, { method: 'GET', headers: { "content-type": "application/json", "clienttype": "web", "lang": "es-LA" } });
                 return await response.json();
-            } catch(e) {
-                return { error: "Fallo leyendo memoria: " + e.message };
-            }
+            } catch(e) { return { error: "Fallo leyendo memoria: " + e.message }; }
         }, userNo);
 
-        if (statsData && statsData.code === "000000") {
-            console.log(`🟢 [APP ANDROID] ¡Datos extraídos con éxito!`);
-            res.json(statsData);
-        } else {
-            res.status(500).json({ error: "No se pudo extraer la información." });
-        }
+        if (statsData && statsData.code === "000000") res.json(statsData);
+        else res.status(500).json({ error: "No se pudo extraer la información." });
     } catch (error) {
-        console.log(`❌ Error Binance Merchant:`, error.message);
         res.status(500).json({ error: "Error interno" });
     } finally {
-        if (page && !page.isClosed()) await page.close(); // Liberación de RAM garantizada
+        if (page && !page.isClosed()) await page.close(); 
     }
 });
 
-// --- ENDPOINT 2: COMENTARIOS ---
 app.post('/api/comments', async (req, res) => {
     await ensureBrowser();
     const { userNo, page = 1 } = req.body;
-
     let tempPage;
     try {
         tempPage = await browser.newPage();
         await tempPage.setBypassCSP(true);
         await tempPage.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36');
-
         await tempPage.goto(`https://c2c.binance.com/es-LA/advertiserDetail?advertiserNo=${userNo}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
 
         const reviewsData = await tempPage.evaluate(async (uid, pageNum) => {
@@ -228,12 +233,11 @@ app.post('/api/comments', async (req, res) => {
         if (posList.length > 0) combinedReviews = combinedReviews.concat(procesarComentarios(posList, "POSITIVE"));
         if (negList.length > 0) combinedReviews = combinedReviews.concat(procesarComentarios(negList, "NEGATIVE"));
 
-        console.log(`🟢 [APP ANDROID] Comentarios procesados y enviados.`);
         res.json({ code: "000000", data: { data: combinedReviews, totalPositivos: totalPos, totalNegativos: totalNeg } });
     } catch (error) {
         res.status(500).json({ error: "Error interno" });
     } finally {
-        if (tempPage && !tempPage.isClosed()) await tempPage.close(); // Liberación de RAM garantizada
+        if (tempPage && !tempPage.isClosed()) await tempPage.close(); 
     }
 });
 
