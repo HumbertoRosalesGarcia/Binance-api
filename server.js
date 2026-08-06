@@ -19,11 +19,9 @@ app.use(express.json({ limit: '50mb' }));
 const backupsDir = path.join(__dirname, 'backups');
 if (!fs.existsSync(backupsDir)) fs.mkdirSync(backupsDir, { recursive: true });
 
-// ¡CRÍTICO! El archivo de usuarios ahora vive en la carpeta de respaldos para no borrarse al reiniciar Docker
 const usersFile = path.join(backupsDir, 'users.json');
 if (!fs.existsSync(usersFile)) fs.writeFileSync(usersFile, JSON.stringify({}));
 
-// Funciones seguras para leer y escribir sin romper el servidor
 function safeReadUsers() {
     try { return JSON.parse(fs.readFileSync(usersFile, 'utf8')); }
     catch (e) { return {}; }
@@ -179,16 +177,17 @@ app.post('/api/users/sync', (req, res) => {
 
     if (!users[email]) {
         const defaultRole = email === 'zonacami77777@gmail.com' ? 'ADMIN' : 'INVITADO';
-        users[email] = { name: name, role: defaultRole, registeredAt: Date.now(), consumedSeconds: 0, isBanned: false };
+        users[email] = { name: name, role: defaultRole, registeredAt: Date.now(), consumedSeconds: 0, isBanned: false, planDuration: 2592000 };
     } else {
         users[email].name = name;
         if (email === 'zonacami77777@gmail.com') users[email].role = 'ADMIN';
         if (users[email].consumedSeconds === undefined) users[email].consumedSeconds = 0;
         if (users[email].isBanned === undefined) users[email].isBanned = false;
+        if (users[email].planDuration === undefined) users[email].planDuration = 2592000;
     }
 
     safeWriteUsers(users);
-    res.json({ role: users[email].role, isBanned: users[email].isBanned, consumedSeconds: users[email].consumedSeconds });
+    res.json({ role: users[email].role, isBanned: users[email].isBanned, consumedSeconds: users[email].consumedSeconds, planDuration: users[email].planDuration });
 });
 
 app.post('/api/users/time', (req, res) => {
@@ -196,14 +195,16 @@ app.post('/api/users/time', (req, res) => {
     let users = safeReadUsers();
     if (users[email]) {
         users[email].consumedSeconds += seconds;
+        let maxTime = users[email].planDuration || 2592000;
 
-        // Si no es ADMIN y superó el límite (1 mes en segundos)
-        if (users[email].role !== 'ADMIN' && users[email].consumedSeconds >= 2592000) {
+        if (users[email].role !== 'ADMIN' && users[email].consumedSeconds >= maxTime) {
             if (users[email].role !== 'INVITADO') {
                 users[email].role = 'INVITADO';
                 users[email].consumedSeconds = 0;
+                users[email].planDuration = 2592000;
             }
         }
+
         safeWriteUsers(users);
     }
     res.json({ code: "000000" });
@@ -214,17 +215,16 @@ app.get('/api/users', (req, res) => {
 });
 
 app.post('/api/users/manage', (req, res) => {
-    const { email, action, role } = req.body;
+    const { email, action, role, planDuration } = req.body;
     let users = safeReadUsers();
     if (users[email]) {
-        // Al asignar un plan, se reinicia el tiempo para que empiece un ciclo de 30 días limpios desde 0
         if (action === 'setRole' && role) {
             users[email].role = role;
             users[email].consumedSeconds = 0;
+            users[email].planDuration = planDuration || 2592000; // Guarda 1 mes, 6 meses o 1 año
         }
         if (action === 'resetTime') users[email].consumedSeconds = 0;
 
-        // Protección Máxima: El Admin principal no se puede banear ni modificar
         if (action === 'ban' && email !== 'zonacami77777@gmail.com') users[email].isBanned = true;
         if (action === 'unban') users[email].isBanned = false;
 
