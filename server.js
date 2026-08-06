@@ -19,8 +19,19 @@ app.use(express.json({ limit: '50mb' }));
 const backupsDir = path.join(__dirname, 'backups');
 if (!fs.existsSync(backupsDir)) fs.mkdirSync(backupsDir, { recursive: true });
 
-const usersFile = path.join(__dirname, 'users.json');
+// ¡CRÍTICO! El archivo de usuarios ahora vive en la carpeta de respaldos para no borrarse al reiniciar Docker
+const usersFile = path.join(backupsDir, 'users.json');
 if (!fs.existsSync(usersFile)) fs.writeFileSync(usersFile, JSON.stringify({}));
+
+// Funciones seguras para leer y escribir sin romper el servidor
+function safeReadUsers() {
+    try { return JSON.parse(fs.readFileSync(usersFile, 'utf8')); }
+    catch (e) { return {}; }
+}
+function safeWriteUsers(users) {
+    try { fs.writeFileSync(usersFile, JSON.stringify(users, null, 2)); }
+    catch (e) { console.error("Error guardando usuarios"); }
+}
 
 let browser;
 let cachedBcvRate = 0.0;
@@ -164,7 +175,7 @@ app.get('/api/backup/:userId', (req, res) => {
 // --- USUARIOS Y ROLES ---
 app.post('/api/users/sync', (req, res) => {
     const { email, name } = req.body;
-    let users = JSON.parse(fs.readFileSync(usersFile, 'utf8'));
+    let users = safeReadUsers();
 
     if (!users[email]) {
         const defaultRole = email === 'zonacami77777@gmail.com' ? 'ADMIN' : 'INVITADO';
@@ -176,46 +187,48 @@ app.post('/api/users/sync', (req, res) => {
         if (users[email].isBanned === undefined) users[email].isBanned = false;
     }
 
-    fs.writeFileSync(usersFile, JSON.stringify(users, null, 2));
+    safeWriteUsers(users);
     res.json({ role: users[email].role, isBanned: users[email].isBanned, consumedSeconds: users[email].consumedSeconds });
 });
 
 app.post('/api/users/time', (req, res) => {
     const { email, seconds } = req.body;
-    let users = JSON.parse(fs.readFileSync(usersFile, 'utf8'));
+    let users = safeReadUsers();
     if (users[email]) {
         users[email].consumedSeconds += seconds;
 
         // Si no es ADMIN y superó el límite (1 mes en segundos)
         if (users[email].role !== 'ADMIN' && users[email].consumedSeconds >= 2592000) {
             if (users[email].role !== 'INVITADO') {
-                users[email].role = 'INVITADO'; // Se degrada a invitado
-                users[email].consumedSeconds = 0; // Reinicia su tiempo de prueba como invitado
+                users[email].role = 'INVITADO';
+                users[email].consumedSeconds = 0;
             }
         }
-
-        fs.writeFileSync(usersFile, JSON.stringify(users, null, 2));
+        safeWriteUsers(users);
     }
     res.json({ code: "000000" });
 });
 
+app.get('/api/users', (req, res) => {
+    res.json(safeReadUsers());
+});
+
 app.post('/api/users/manage', (req, res) => {
     const { email, action, role } = req.body;
-    let users = JSON.parse(fs.readFileSync(usersFile, 'utf8'));
+    let users = safeReadUsers();
     if (users[email]) {
-        // Al asignar un plan, se reinicia el tiempo para que empiece un ciclo de 30 días limpios
+        // Al asignar un plan, se reinicia el tiempo para que empiece un ciclo de 30 días limpios desde 0
         if (action === 'setRole' && role) {
             users[email].role = role;
             users[email].consumedSeconds = 0;
         }
         if (action === 'resetTime') users[email].consumedSeconds = 0;
 
-        // Protección: El Admin no se puede banear
+        // Protección Máxima: El Admin principal no se puede banear ni modificar
         if (action === 'ban' && email !== 'zonacami77777@gmail.com') users[email].isBanned = true;
-
         if (action === 'unban') users[email].isBanned = false;
 
-        fs.writeFileSync(usersFile, JSON.stringify(users, null, 2));
+        safeWriteUsers(users);
         res.json({ code: "000000", message: "Éxito" });
     } else {
         res.status(404).json({ error: "No encontrado" });
